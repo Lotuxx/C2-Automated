@@ -8,6 +8,32 @@ A decision may be revised later if new technical constraints or project requirem
 
 ---
 
+## Document Conventions
+
+### ADR — Architecture Decision Record
+
+`ADR` stands for **Architecture Decision Record**.
+
+An ADR documents a decision that has been accepted as part of the current
+architecture or technical baseline.
+
+Each ADR records:
+
+- **Context** — why the decision was necessary;
+- **Decision** — what was chosen;
+- **Consequences** — what follows from the decision.
+
+### PRO — Proposed Decision
+
+`PRO` stands for **Proposed Decision**.
+
+A PRO documents a topic that still requires a decision.
+
+It is explicitly **not** part of the finalized architecture until it is
+resolved and, when appropriate, converted into an ADR.
+
+---
+
 ## Decision Status
 
 The following statuses are used:
