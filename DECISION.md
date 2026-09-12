@@ -902,6 +902,134 @@ The exact implementation approach, concurrency model, scheduling mechanism, and 
 
 ---
 
+## PRO-006 — Define the Meaning and Scope of `SELF_DESTRUCT`
+
+**Status:** Proposed
+
+## Context
+
+The agent command model currently includes a `SELF_DESTRUCT` capability.
+
+However, the term **self-destruct** can represent different levels of behaviour.
+The project has not yet decided which interpretation should be implemented.
+
+Because the operation can cause the agent to terminate or remove data, its
+scope must be explicitly defined before implementation.
+
+## Possible Interpretations
+
+### Option A — Process Termination
+
+The command causes the running agent process to terminate.
+
+```text id="5s7w20"
+C2
+ ↓
+SELF_DESTRUCT
+ ↓
+Agent validates request
+ ↓
+Agent terminates
+```
+
+Under this interpretation, the agent stops executing but does not necessarily
+remove its files or other local data.
+
+---
+
+### Option B — Process Termination + Temporary Cleanup
+
+The command terminates the agent and removes its temporary runtime data.
+
+```text id="7r8sd4"
+C2
+ ↓
+SELF_DESTRUCT
+ ↓
+Agent validation
+ ↓
+Cleanup temporary data
+ ↓
+Agent termination
+```
+
+The cleanup would be limited to the project's defined temporary workspace.
+
+---
+
+### Option C — Process Termination + Project Workspace Cleanup
+
+The command terminates the agent and removes the files associated with the
+agent's controlled project workspace.
+
+This could include project-specific:
+
+```text id="2kyxb5"
+temporary data
+transfer data
+local runtime data
+```
+
+The exact cleanup scope would need to be explicitly defined.
+
+---
+
+### Option D — Full Agent Removal
+
+The command would attempt to remove the agent installation and any
+project-controlled mechanisms associated with its presence on the endpoint.
+
+This is the most extensive interpretation and would require significantly more
+design around:
+
+- installation locations;
+- persistence mechanisms;
+- cleanup ordering;
+- failure handling;
+- privileges;
+- recovery;
+- verification.
+
+This interpretation is therefore not assumed by the current architecture.
+
+---
+
+## Decision Criteria
+
+Before selecting an implementation, the following should be considered:
+
+- alignment with the academic project requirements;
+- implementation complexity;
+- safety within the laboratory environment;
+- ability to test the behaviour reliably;
+- interaction with persistence mechanisms;
+- cleanup guarantees;
+- privilege requirements;
+- documentation requirements;
+- demonstration value.
+
+## Current Position
+
+No option has been selected yet.
+
+The `SELF_DESTRUCT` command should therefore remain a **defined capability but
+an unresolved implementation decision**.
+
+The final interpretation should be recorded as an `ADR` once selected.
+
+## Related Documentation
+
+Once the interpretation is selected, the corresponding behaviour should be
+reflected in:
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md);
+- [`docs/task-lifecycle.md`](docs/task-lifecycle.md);
+- [`docs/testing-strategy.md`](docs/testing-strategy.md);
+- [`docs/kill-chain-analysis.md`](docs/kill-chain-analysis.md);
+- [`docs/countermeasures.md`](docs/countermeasures.md), where applicable.
+
+---
+
 # Superseding Decisions
 
 When an accepted decision is later replaced, the original ADR should not be deleted.
