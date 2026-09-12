@@ -330,6 +330,9 @@ The architecture should be treated as the current design baseline. Significant c
 
 Detailed documents will be added as individual subsystems become sufficiently defined to justify their own specifications.
 
+See [`docs/README.md`](docs/README.md) for the complete documentation index
+and a guide to where each technical subject is documented.
+
 ---
 
 ## Branching Strategy
