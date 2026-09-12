@@ -2,870 +2,816 @@
 
 ## 1. Purpose
 
-This document analyses the **C2-AUTOMATED** project using the **Cyber Kill Chain** model.
+This document analyses the capabilities of **C2-AUTOMATED** against the **Cyber Kill Chain** model.
 
-The objective is to understand how the capabilities represented by the project relate to the different phases of an attack lifecycle.
+The objective is not to claim that the project implements a complete attack chain. Instead, the analysis identifies:
 
-This analysis does **not** mean that the project implements a complete real-world attack chain.
+- which project capabilities correspond to specific phases;
+- which phases are only partially related to the project;
+- which capabilities are outside the project scope;
+- the security implications of the implemented capabilities.
 
-Instead, it identifies:
-
-- which Kill Chain phases are represented by project capabilities;
-- which phases are only partially represented;
-- which phases are outside the project scope;
-- which security risks are associated with each phase;
-- which defensive controls are relevant.
-
-This document complements:
-
-- [`threat-model.md`](threat-model.md) for the identified risks;
-- [`countermeasures.md`](countermeasures.md) for mitigation;
-- [`../SECURITY.md`](../SECURITY.md) for the overall security principles;
-- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the system architecture;
-- [`testing-strategy.md`](testing-strategy.md) for security validation.
+C2-AUTOMATED is primarily a **Command and Control** system with selected endpoint capabilities associated with **Actions on Objectives**.
 
 ---
 
-# 2. Cyber Kill Chain model
+## 2. Authorized-Use Boundary
 
-The analysis uses the seven phases of the Cyber Kill Chain:
+C2-AUTOMATED is an academic project intended for use in an **authorized laboratory environment**.
 
-```text
-1. Reconnaissance
-        ↓
-2. Weaponization
-        ↓
-3. Delivery
-        ↓
-4. Exploitation
-        ↓
-5. Installation
-        ↓
-6. Command and Control
-        ↓
-7. Actions on Objectives
-```
+All development, deployment, demonstration, and testing must be performed only on systems and environments for which explicit authorization exists.
 
-The model is used here as an **analytical framework**, not as an indication that every phase is implemented by C2-AUTOMATED.
+Examples include:
 
----
+- systems owned or administered by the project user;
+- dedicated laboratory machines;
+- isolated virtual machines;
+- private laboratory networks;
+- institution-provided exercise environments.
 
-# 3. Project capability baseline
+The project is not intended for:
 
-Before analysing the Kill Chain, the project's actual capabilities must be clearly defined.
-
-C2-AUTOMATED is a **centralized C2 server and agent system** designed for an authorized laboratory environment.
-
-The following matrix is the authoritative capability baseline for this document.
-
-## 3.1 Core capabilities
-
-| ID | Capability | Component | Description | Scope | Status |
-|---|---|---|---|---|---|
-| CAP-001 | Agent management | C2 | Maintain logical information about known agents | Core | Required |
-| CAP-002 | Session management | C2 / Agent | Track communication sessions independently from agent identity | Core | Required |
-| CAP-003 | Multi-agent management | C2 | Manage multiple agents concurrently | Core | Required |
-| CAP-004 | Beaconing | Agent | Determine when the agent initiates communication | Communication | Required |
-| CAP-005 | TCP/TLS transport | C2 / Agent | Secure network communication | Communication | Required |
-| CAP-006 | Application protocol | C2 / Agent | Encode, decode and validate exchanged messages | Communication | Required |
-| CAP-007 | Asynchronous task queuing | C2 / Agent | Maintain pending tasks independently of continuous connectivity | Task management | Required |
-| CAP-008 | Task execution | Agent | Dispatch received tasks to the execution layer | Endpoint | Required |
-| CAP-009 | Result management | C2 / Agent | Generate, transmit, correlate and store task results | Task management | Required |
-| CAP-010 | File transfer | C2 / Agent | Transfer files using a dedicated transfer lifecycle | File management | Required |
-| CAP-011 | Persistent metadata | C2 | Store structured application state | Storage | Required |
-| CAP-012 | Controlled file storage | C2 / Agent | Store transferred and temporary files in designated workspaces | Storage | Required |
-| CAP-013 | Operator interface | C2 | Provide operator control of the system | Interface | CLI MVP |
-| CAP-014 | Linux support | Agent | Support execution on Linux | Platform | Required |
-| CAP-015 | Windows support | Agent | Support execution on Windows | Platform | Bonus |
-| CAP-016 | TUI interface | C2 | Alternative terminal interface | Interface | Future / Bonus |
-| CAP-017 | Web interface | C2 | Alternative web-based interface | Interface | Future / Bonus |
-| CAP-018 | Additional transports | C2 / Agent | Alternative transport implementations | Communication | Future / Bonus |
+- third-party systems without explicit authorization;
+- production systems unless they are explicitly designated and authorized for the exercise;
+- public internet targets that are not part of the laboratory environment;
+- systems belonging to other users or organizations without authorization.
 
 ---
 
-## 3.2 Endpoint task capabilities
+## 3. Cyber Kill Chain Overview
 
-The agent currently defines the following task categories:
-
-| ID | Capability | Description | Status |
-|---|---|---|---|
-| CAP-019 | `SHELL` | Execute commands through the controlled executor layer | Required |
-| CAP-020 | `SYSINFO` | Collect explicitly defined system information from the agent environment | Required |
-| CAP-021 | `FILES` | Perform controlled file operations and participate in file transfers | Required |
-| CAP-022 | `PERSISTENCE` | Represent persistence-related functionality within an explicitly defined scope | Scope open |
-| CAP-023 | `SELF_DESTRUCT` | Terminate and/or clean up the agent according to an explicitly defined scope | `PRO-006` open |
-
-The exact implementation of these capabilities must remain consistent with the architecture and security model.
-
-`PERSISTENCE` and `SELF_DESTRUCT` must not be treated as having broader behavior than what is explicitly documented and validated.
-
----
-
-# 4. Capability boundaries
-
-The capability matrix above defines **what the project can do**.
-
-The architecture defines **where that capability is implemented**.
-
-The main responsibility boundaries are:
-
-```text
-C2
- ├── Manage agents
- ├── Manage sessions
- ├── Create / queue tasks
- ├── Receive results
- └── Manage file transfers
-
-Agent
- ├── Beacon
- ├── Receive tasks
- ├── Execute tasks
- ├── Produce results
- └── Participate in file transfers
-```
-
-The transport does not execute tasks:
-
-```text
-Transport
-    ↓
-Protocol
-    ↓
-Task
-    ↓
-Executor
-    ↓
-Command
-```
-
-This distinction is important when interpreting the Kill Chain.
-
----
-
-# 5. Important interpretation
-
-The project should not be described as implementing the complete Cyber Kill Chain.
-
-Its primary capability is **Command and Control**, with a limited set of endpoint capabilities that can be associated with **Actions on Objectives**.
-
-A simplified representation is:
+The **Cyber Kill Chain** is commonly represented as a sequence of attack phases:
 
 ```text
 Reconnaissance
-      │
-      │ No dedicated capability
-      ▼
+      ↓
 Weaponization
-      │
-      │ No dedicated capability
-      ▼
+      ↓
 Delivery
-      │
-      │ Limited technical relationship
-      ▼
+      ↓
 Exploitation
-      │
-      │ No exploitation capability
-      ▼
+      ↓
 Installation
-      │
-      │ Partial relationship
-      ▼
+      ↓
 Command & Control
-      │
-      │ PRIMARY PROJECT CAPABILITY
-      ▼
+      ↓
 Actions on Objectives
-      │
-      │ Selected endpoint capabilities
-      ▼
-Controlled laboratory environment
 ```
 
----
+The project does not attempt to implement every phase.
 
-# 6. Kill Chain phase analysis
-
-## 6.1 Reconnaissance
-
-### Project representation
-
-No dedicated reconnaissance capability is defined.
-
-Although the agent may collect information through `CAP-020 — SYSINFO`, this is an endpoint-management capability and should not be interpreted as a dedicated pre-compromise reconnaissance subsystem.
-
-### Coverage
-
-**Out of primary project scope.**
-
-### Security relevance
-
-Information returned by `SYSINFO` may still be sensitive and should therefore be protected appropriately.
-
----
-
-## 6.2 Weaponization
-
-### Project representation
-
-No dedicated weaponization subsystem is defined.
-
-The agent must be built and deployed for the laboratory environment, but this does not represent a generalized weaponization capability.
-
-### Coverage
-
-**Out of project scope.**
-
-### Security relevance
-
-The main concerns are software and configuration integrity before deployment.
-
----
-
-## 6.3 Delivery
-
-### Project representation
-
-`CAP-010 — File transfer` provides a mechanism for moving files between the C2 and an existing agent.
-
-This creates a **technical relationship** with the Delivery phase, but the project does not define a dedicated intrusion-delivery subsystem.
-
-### Coverage
-
-**Partial technical relationship.**
-
-### Relevant capabilities
-
-- `CAP-005` — TCP/TLS;
-- `CAP-006` — Application protocol;
-- `CAP-010` — File transfer;
-- `CAP-012` — Controlled file storage.
-
-### Relevant risks
-
-- TM-011 — Path traversal / unauthorized file access;
-- TM-012 — File-transfer corruption;
-- TM-013 — Malicious or excessive file transfer;
-- TM-016 — Storage confidentiality breach.
-
----
-
-## 6.4 Exploitation
-
-### Project representation
-
-No vulnerability-exploitation capability is defined.
-
-The C2 and agent nevertheless expose security-sensitive interfaces that may themselves be subject to exploitation attempts.
-
-This distinction is important:
+Its main purpose is to provide:
 
 ```text
-Exploitation as a capability
-            ≠
-Exposure to exploitation risk
+Command & Control
+        +
+Selected endpoint capabilities
 ```
 
-### Coverage
-
-**Out of scope as a project capability.**
-
-### Relevant capabilities
-
-Primarily:
-
-- `CAP-005` — TCP/TLS;
-- `CAP-006` — Application protocol;
-- `CAP-007` — Asynchronous task queuing.
-
-### Relevant risks
-
-- TM-001 — Unauthorized C2 connection;
-- TM-003 — Message tampering;
-- TM-005 — Malformed protocol message;
-- TM-007 — Task parameter manipulation;
-- TM-020 — Denial of service;
-- TM-021 — Session confusion.
+The relationship with the Kill Chain must therefore be understood as a **capability mapping**, not as a claim that the project is a complete intrusion framework.
 
 ---
 
-## 6.5 Installation
+## 4. Scope and Identifier Conventions
 
-### Project representation
+### 4.1 Scope labels
 
-The project requires an agent to be deployed in the laboratory environment.
+The capability classification in this document uses three scope labels:
 
-It also defines:
+| Scope | Meaning |
+|---|---|
+| **Required** | Part of the current MVP and required project delivery scope. |
+| **Bonus** | Optional functionality beyond the required MVP. |
+| **Future** | Architectural extension considered possible but not part of the current delivery target. |
 
-- `CAP-022 — PERSISTENCE`;
-- `CAP-023 — SELF_DESTRUCT`.
+These labels describe **project scope**, not implementation maturity.
 
-However, deployment does not automatically imply persistence.
+For example, a capability marked `Required` may still be under development.
 
-```text
-Agent is deployed
-        ≠
-Agent establishes persistence
-```
+### 4.2 Definition state
 
-The exact persistence behavior remains to be defined.
+Definition state is tracked separately from project scope:
 
-### Coverage
+| State | Meaning |
+|---|---|
+| **Defined** | The intended behaviour and boundaries are sufficiently established for implementation. |
+| **Open** | The capability is in scope, but its exact behaviour, limits, or implementation rules still require a design decision. |
 
-**Partial.**
-
-### Relevant risks
-
-- TM-010 — Agent-side execution abuse;
-- TM-011 — Path traversal / unauthorized file access;
-- TM-023 — Unsafe `SELF_DESTRUCT` behavior.
-
----
-
-# 7. Command and Control
-
-## 7.1 Primary project phase
-
-**Command and Control is the central Kill Chain phase represented by C2-AUTOMATED.**
-
-The relevant capability chain is:
-
-```text
-CAP-001  Agent management
-    ↓
-CAP-002  Session management
-    ↓
-CAP-004  Beaconing
-    ↓
-CAP-005  TCP/TLS
-    ↓
-CAP-006  Application protocol
-    ↓
-CAP-007  Asynchronous task queuing
-    ↓
-CAP-008  Task execution
-    ↓
-CAP-009  Result management
-    ↓
-CAP-010  File transfer
-```
-
-These capabilities form the main C2 system.
-
----
-
-## 7.2 Asynchronous C2 model
-
-The agent initiates communication according to its Beacon cycle.
-
-```text
-Agent
-  │
-  ▼
-Beacon opportunity
-  │
-  ▼
-TCP/TLS session
-  │
-  ├── Identity / state
-  ├── Pending tasks
-  ├── Results
-  └── File-transfer information
-  │
-  ▼
-Session ends or continues
-  │
-  ▼
-Next communication opportunity
-```
-
-The important architectural property is that the C2 can maintain logical state even when an agent is temporarily disconnected.
+Implementation maturity is tracked separately in `docs/requirements-mapping.md`.
 
 For example:
 
 ```text
-Operator creates task
-        │
-        ▼
-Task = PENDING
-        │
-        │ Agent offline
-        │
-        ▼
-Agent next beacon
-        │
-        ▼
-Task delivered
-        │
-        ▼
-Execution
-        │
-        ▼
-Result
+CAP-022 PERSISTENCE
+Scope: Required
+Definition: Open
+Implementation status: tracked separately
 ```
 
-The detailed network model is defined in [`network-architecture.md`](network-architecture.md).
+This distinction prevents an unresolved design decision from being confused with an optional capability.
 
----
+### 4.3 Acronyms and identifier conventions
 
-## 7.3 Relevant risks
+Several identifiers are used throughout the project documentation to maintain traceability.
 
-The Command and Control phase is associated with:
-
-- TM-001 — Unauthorized C2 connection;
-- TM-002 — Agent impersonation;
-- TM-003 — Message tampering;
-- TM-004 — Message replay;
-- TM-005 — Malformed protocol message;
-- TM-006 — Unauthorized task creation;
-- TM-008 — Duplicate task execution;
-- TM-009 — Task/result confusion;
-- TM-020 — Denial of service;
-- TM-021 — Session confusion;
-- TM-022 — Beacon / communication-state abuse.
-
-These risks are maintained in [`threat-model.md`](threat-model.md).
-
----
-
-# 8. Actions on Objectives
-
-## 8.1 Project representation
-
-C2-AUTOMATED supports selected endpoint task capabilities:
-
-```text
-CAP-019  SHELL
-CAP-020  SYSINFO
-CAP-021  FILES
-CAP-022  PERSISTENCE
-CAP-023  SELF_DESTRUCT
-```
-
-These are controlled project capabilities and should not be interpreted as a complete set of post-compromise objectives.
-
----
-
-## 8.2 Capability interpretation
-
-### `SHELL`
-
-Represents controlled command execution through:
-
-```text
-Task
-  ↓
-Executor
-  ↓
-Command handler
-  ↓
-Platform-specific implementation
-```
-
-Relevant risks include:
-
-- TM-006;
-- TM-007;
-- TM-010;
-- TM-021.
-
----
-
-### `SYSINFO`
-
-Represents collection of explicitly defined information about the agent environment.
-
-The exact information collected should be limited to what is required by the project.
-
-Relevant concern:
-
-- information disclosure.
-
----
-
-### `FILES`
-
-Represents controlled file operations and file-transfer participation.
-
-It does **not** imply unrestricted filesystem access.
-
-Relevant risks include:
-
-- TM-011;
-- TM-012;
-- TM-013;
-- TM-014;
-- TM-016.
-
----
-
-### `PERSISTENCE`
-
-Represents the persistence-related capability category.
-
-Its exact implementation remains subject to an explicit scope decision.
-
-It must not be considered unrestricted persistence.
-
-**Status:** Scope open.
-
----
-
-### `SELF_DESTRUCT`
-
-Represents an agent termination/cleanup capability.
-
-Its final behavior is tracked under `PRO-006`.
-
-Possible scopes remain:
-
-```text
-A — Process termination only
-B — Process termination + temporary cleanup
-C — Process termination + project workspace cleanup
-D — Full agent removal / persistence cleanup
-```
-
-The selected behavior must be explicitly bounded and validated.
-
----
-
-# 9. Kill Chain mapping matrix
-
-The following matrix is the authoritative summary of the relationship between project capabilities and Kill Chain phases.
-
-| Kill Chain phase | Relevant capabilities | Coverage | Main interpretation |
-|---|---|---|---|
-| Reconnaissance | CAP-020 | None dedicated | `SYSINFO` is endpoint information collection, not a reconnaissance subsystem |
-| Weaponization | None | Out of scope | No dedicated weaponization capability |
-| Delivery | CAP-005, CAP-006, CAP-010, CAP-012 | Partial | File transfer provides a technical delivery-like mechanism but is primarily a file-management feature |
-| Exploitation | None | Out of scope | The project may be exposed to exploitation attempts but does not implement exploitation |
-| Installation | CAP-014, CAP-022, CAP-023 | Partial | Agent deployment and persistence-related capabilities have limited relationship to this phase |
-| Command & Control | CAP-001–CAP-010 | **Core** | Primary project purpose |
-| Actions on Objectives | CAP-019–CAP-023 | **Partial** | Selected endpoint task capabilities |
-
----
-
-# 10. Capability-to-risk relationship
-
-The capability model can be connected to the threat model without duplicating the risk descriptions.
-
-```text
-Capability
-    ↓
-Attack surface
-    ↓
-Threat
-    ↓
-TM-* risk
-    ↓
-Countermeasure
-```
+| Identifier | Meaning | Purpose |
+|---|---|---|
+| **CAP** | **Capability** | Identifies a functional capability of C2-AUTOMATED. |
+| **TM** | **Threat Model entry** | Identifies an individual threat defined in `docs/threat-model.md`. |
+| **SR** | **Security Requirement** | Identifies a security requirement derived from the threat model. |
+| **ADR** | **Architecture Decision Record** | Identifies an accepted architectural decision documented in `DECISIONS.md`. |
+| **PRO** | **Project/Open Decision** | Identifies an unresolved project decision requiring a later design decision. |
 
 Examples:
 
-| Capability | Main risks |
-|---|---|
-| CAP-004 — Beaconing | TM-022 |
-| CAP-005 — TCP/TLS | TM-001, TM-003 |
-| CAP-006 — Protocol | TM-003, TM-004, TM-005 |
-| CAP-007 — Task queuing | TM-008, TM-020, TM-021 |
-| CAP-019 — `SHELL` | TM-006, TM-007, TM-010 |
-| CAP-021 — `FILES` | TM-011, TM-012, TM-013, TM-014, TM-016 |
-| CAP-022 — `PERSISTENCE` | TM-010, TM-011 |
-| CAP-023 — `SELF_DESTRUCT` | TM-023 |
-
-The complete risk definitions remain in [`threat-model.md`](threat-model.md).
-
----
-
-# 11. Defensive interpretation
-
-The Kill Chain analysis is also useful from a defensive perspective.
-
-Each represented phase creates potential points where activity can be:
-
-- prevented;
-- validated;
-- logged;
-- detected;
-- constrained.
-
-For C2-AUTOMATED, the strongest defensive opportunities are concentrated around:
-
 ```text
-Network connection
-       ↓
-Authentication
-       ↓
-Protocol validation
-       ↓
-Session management
-       ↓
-Task creation
-       ↓
-Task execution
-       ↓
-File handling
-       ↓
-Logging
+CAP-022 → Capability 22: PERSISTENCE
+TM-023  → Threat Model entry 23
+SR-001  → Security Requirement 1
+ADR-005 → Architecture Decision Record 5
+PRO-006 → Project/Open Decision 6
 ```
 
-This corresponds closely to the security boundaries identified in the threat model.
+These identifiers are **documentation references**. They are not:
 
----
+- protocol message identifiers;
+- database primary keys;
+- task IDs;
+- agent IDs;
+- session IDs;
+- implementation-specific identifiers.
 
-# 12. Security controls by Kill Chain phase
-
-| Phase | Relevant control areas |
-|---|---|
-| Reconnaissance | Protect system and agent information |
-| Weaponization | Software and configuration integrity |
-| Delivery | TLS, file integrity, controlled workspaces |
-| Exploitation | Authentication, protocol validation, resource limits |
-| Installation | Explicit persistence scope, privilege boundaries |
-| Command & Control | Authentication, TLS, protocol validation, session isolation, logging |
-| Actions on Objectives | Task validation, authorization, executor boundary, filesystem restrictions, integrity checks |
-
-The detailed threat-to-control mapping belongs in [`countermeasures.md`](countermeasures.md).
-
----
-
-# 13. Relationship with the threat model
-
-The two documents deliberately answer different questions.
-
-```text
-Threat Model
-"What threats and risks exist?"
-
-Kill Chain Analysis
-"Where do project capabilities fit within an attack lifecycle?"
-
-Countermeasures
-"How are those risks mitigated?"
-```
-
-The Kill Chain analysis therefore references `TM-*` identifiers instead of creating a second risk catalogue.
-
----
-
-# 14. Relationship with project requirements
-
-The capability model should remain consistent with [`requirements-mapping.md`](requirements-mapping.md).
-
-The expected traceability is:
-
-```text
-Requirement
-    ↓
-Capability
-    ↓
-Architecture
-    ↓
-Implementation
-    ↓
-Test
-```
+They exist to make relationships between project documents explicit.
 
 For example:
 
 ```text
-Multi-agent requirement
-        ↓
-CAP-003
-        ↓
-Agent / Session / Task architecture
-        ↓
-C2 implementation
-        ↓
-Multi-agent integration test
+CAP-022
+   ↓
+TM-010 / TM-011
+   ↓
+Security requirements
+   ↓
+Implementation
+   ↓
+Tests
 ```
 
-This prevents the requirements documentation and security analysis from describing different project scopes.
-
 ---
 
-# 15. Testing implications
+## 5. Capability Catalogue
 
-Every required capability should have corresponding validation.
+### 5.1 Core capabilities
 
-| Capability group | Validation focus |
-|---|---|
-| Agent / session management | Identity and session consistency |
-| Beaconing | Communication cycle and reconnection |
-| TCP/TLS | Secure connection handling |
-| Protocol | Message validation and malformed input |
-| Task management | Queueing, lifecycle and correlation |
-| Result management | Correct task/result association |
-| File transfer | Chunking, reconstruction and integrity |
-| `SHELL` | Controlled execution and parameter validation |
-| `SYSINFO` | Correct and bounded collection |
-| `FILES` | Workspace and path restrictions |
-| `PERSISTENCE` | Explicit scope and controlled behavior |
-| `SELF_DESTRUCT` | Only selected bounded behavior |
-| Linux | Functional Linux validation |
-| Windows | Separate bonus validation |
-| CLI | Operator workflow validation |
+| ID | Capability | Scope | Definition |
+|---|---|---|---|
+| `CAP-001` | Agent management | Required | Defined |
+| `CAP-002` | Session management | Required | Defined |
+| `CAP-003` | Multi-agent management | Required | Defined |
+| `CAP-004` | Beaconing | Required | Defined |
+| `CAP-005` | TCP/TLS communication | Required | Defined |
+| `CAP-006` | Application protocol | Required | Defined |
+| `CAP-007` | Asynchronous task queuing | Required | Defined |
+| `CAP-008` | Task execution | Required | Defined |
+| `CAP-009` | Result management | Required | Defined |
+| `CAP-010` | File transfer | Required | Defined |
+| `CAP-011` | Persistent metadata | Required | Defined |
+| `CAP-012` | Controlled file storage | Required | Defined |
+| `CAP-013` | Operator interface | Required | Defined |
+| `CAP-014` | Linux support | Required | Defined |
+| `CAP-015` | Windows support | Bonus | Defined |
+| `CAP-016` | TUI interface | Future | Defined |
+| `CAP-017` | Web interface | Future | Defined |
+| `CAP-018` | Additional transports | Future | Defined |
 
-The detailed methodology belongs in [`testing-strategy.md`](testing-strategy.md).
+### 5.2 Endpoint task capabilities
 
----
+| ID | Capability | Scope | Definition |
+|---|---|---|---|
+| `CAP-019` | `SHELL` | Required | Defined |
+| `CAP-020` | `SYSINFO` | Required | Defined |
+| `CAP-021` | `FILES` | Required | Defined |
+| `CAP-022` | `PERSISTENCE` | Required | Open |
+| `CAP-023` | `SELF_DESTRUCT` | Required | Open |
 
-# 16. Project scope boundaries
+### 5.3 Important classification notes
 
-The project should not claim capabilities that are not represented in the capability matrix.
+`CAP-022 PERSISTENCE` and `CAP-023 SELF_DESTRUCT` are both **required project capabilities**.
 
-In particular, C2-AUTOMATED does not currently define dedicated implementations for:
+However, their exact behaviour is not yet completely defined.
 
-- reconnaissance;
-- weaponization;
-- vulnerability exploitation;
-- generalized delivery;
-- unrestricted persistence;
-- arbitrary post-compromise objectives.
-
-Similarly, the following should not be inferred automatically:
+This means:
 
 ```text
-File transfer
-    ≠
-Complete Delivery capability
-
-SHELL
-    ≠
-Exploitation capability
-
-Agent deployment
-    ≠
-Automatic persistence
-
-SELF_DESTRUCT
-    ≠
-Unrestricted deletion
+Required ≠ Fully specified
 ```
 
-The documented capability, rather than the broadest possible interpretation of the terminology, should be used during project evaluation.
+In particular:
+
+- `PERSISTENCE` requires a final decision about the exact supported persistence mechanism and its boundaries.
+- `SELF_DESTRUCT` requires a final decision about what is removed or terminated. This is tracked in `PRO-006`.
+
+Neither capability should therefore be classified as `Bonus` merely because its detailed implementation is still open.
 
 ---
 
-# 17. Open decisions affecting the analysis
+## 6. Kill Chain Mapping
 
-The following decisions may change the exact Kill Chain mapping:
+### 6.1 Summary matrix
 
-| Decision | Affected capability | Affected phase | Status |
-|---|---|---|---|
-| Authentication model | CAP-001, CAP-002, CAP-005 | Command & Control | Open |
-| Protocol contract | CAP-006 | Command & Control | Open |
-| Session state machine | CAP-002 | Command & Control | Open |
-| Persistence implementation | CAP-022 | Installation / Actions on Objectives | Open |
-| `SELF_DESTRUCT` scope | CAP-023 | Actions on Objectives | Open — `PRO-006` |
-| Additional transports | CAP-018 | Command & Control | Future |
-| Additional command types | CAP-019–CAP-023 | Actions on Objectives | Future |
+| Kill Chain Phase | Relationship with C2-AUTOMATED | Relevant capabilities |
+|---|---|---|
+| Reconnaissance | No dedicated capability | None |
+| Weaponization | Out of scope | None |
+| Delivery | Partial technical relationship | `CAP-005`, `CAP-006`, `CAP-010`, `CAP-012` |
+| Exploitation | No dedicated capability | None |
+| Installation | Partial relationship | `CAP-022` |
+| Command & Control | Core project functionality | `CAP-001`–`CAP-010` |
+| Actions on Objectives | Selected endpoint capabilities | `CAP-019`–`CAP-023` |
 
-The analysis should be updated if these decisions materially change the project capability baseline.
+The project should not be described as implementing a complete Cyber Kill Chain.
 
 ---
 
-# 18. Capability status summary
+## 7. Reconnaissance
 
-The project currently distinguishes three categories.
+### Relationship
+
+The project does not provide a dedicated reconnaissance subsystem.
+
+The `SYSINFO` capability should not be considered reconnaissance in the Kill Chain sense.
+
+`SYSINFO` is an **endpoint information-collection operation** executed after an agent is already present and communicating with the C2.
+
+### Relevant capability
+
+None directly.
+
+`CAP-020 SYSINFO` is related to endpoint information gathering but is not classified as a reconnaissance capability.
+
+### Conclusion
+
+```text
+Reconnaissance
+     │
+     └── No dedicated C2-AUTOMATED capability
+```
+
+---
+
+## 8. Weaponization
+
+### Relationship
+
+Weaponization is outside the project scope.
+
+The project does not define a subsystem for constructing malware, exploit packages, or attack payloads as part of the Kill Chain.
+
+### Conclusion
+
+```text
+Weaponization
+     │
+     └── Out of project scope
+```
+
+---
+
+## 9. Delivery
+
+### Relationship
+
+C2-AUTOMATED has technical functionality that supports the movement of tasks and files between the C2 server and an agent.
+
+Relevant capabilities include:
+
+- `CAP-005` TCP/TLS communication;
+- `CAP-006` application protocol;
+- `CAP-010` file transfer;
+- `CAP-012` controlled file storage.
+
+However, this does **not** make the project a complete delivery subsystem.
+
+The project assumes an already deployed or otherwise authorized agent participating in the laboratory environment.
+
+Therefore:
+
+> **File transfer is not equivalent to a complete Kill Chain Delivery capability.**
+
+### Conclusion
+
+```text
+Delivery
+   │
+   ├── CAP-005
+   ├── CAP-006
+   ├── CAP-010
+   └── CAP-012
+```
+
+The relationship is therefore **partial**.
+
+---
+
+## 10. Exploitation
+
+### Relationship
+
+The C2-AUTOMATED project does not implement an exploitation subsystem.
+
+The agent is not designed to gain access by exploiting a vulnerability as part of its core architecture.
+
+The project can execute commands on an endpoint where an agent is already running, but:
+
+> **SHELL execution is not equivalent to Exploitation.**
+
+Likewise, deployment of the agent is not itself evidence that an exploitation stage exists.
+
+### Conclusion
+
+```text
+Exploitation
+     │
+     └── No dedicated capability
+```
+
+---
+
+## 11. Installation
+
+### Relationship
+
+Installation has a limited relationship with the project through the `PERSISTENCE` capability.
+
+### Relevant capability
+
+`CAP-022 PERSISTENCE`
+
+This capability is intended to represent controlled persistence functionality on the endpoint.
+
+Its exact behaviour remains open and is therefore tracked separately from the broader architectural design.
+
+The capability should not be expanded conceptually into unrestricted persistence mechanisms.
+
+### Important distinction
+
+```text
+Agent deployment
+      ≠
+Persistence
+```
+
+Deploying or launching the agent does not automatically mean that the project implements a complete Installation phase.
+
+### Conclusion
+
+```text
+Installation
+     │
+     └── CAP-022 PERSISTENCE
+```
+
+The relationship is **partial**.
+
+---
+
+## 12. Command & Control
+
+This is the **central Kill Chain phase represented by C2-AUTOMATED**.
+
+The architecture is specifically designed around managing agents, communication sessions, tasks, results, and file transfers.
+
+Relevant capabilities are:
+
+```text
+CAP-001  Agent management
+CAP-002  Session management
+CAP-003  Multi-agent management
+CAP-004  Beaconing
+CAP-005  TCP/TLS
+CAP-006  Application protocol
+CAP-007  Asynchronous task queuing
+CAP-008  Task execution
+CAP-009  Result management
+CAP-010  File transfer
+```
+
+The resulting model is:
+
+```text
+Operator
+   │
+   ▼
+C2 Server
+   │
+   ├── Agents
+   ├── Sessions
+   ├── Tasks
+   ├── Results
+   └── Files
+   │
+   ▼
+Agent
+```
+
+### 12.1 Agent management
+
+`CAP-001` provides the logical management of agents.
+
+The server maintains information such as:
+
+```text
+agent_id
+hostname
+OS
+architecture
+address
+status
+last_seen
+transport
+```
+
+### 12.2 Session management
+
+`CAP-002` separates the persistent identity of an agent from an individual communication session.
+
+```text
+Agent A001
+    │
+    ├── Session S41
+    ├── Session S42
+    └── Session S43
+```
+
+The agent identity persists while communication sessions may change.
+
+### 12.3 Multi-agent management
+
+`CAP-003` addresses the multi-agent requirement.
+
+The server must be able to manage multiple agents without treating the whole C2 as a single-agent connection.
+
+### 12.4 Beaconing
+
+`CAP-004` determines **when** the agent communicates.
+
+This remains conceptually separate from transport:
+
+```text
+Beacon  = when to communicate
+Transport = how to communicate
+```
+
+### 12.5 TCP/TLS
+
+`CAP-005` defines the mandatory MVP communication mechanism.
+
+TLS provides protection for communication in transit.
+
+### 12.6 Application protocol
+
+`CAP-006` defines what the C2 server and agent exchange.
+
+Representative message types include:
+
+```text
+REGISTER
+BEACON
+TASK
+RESULT
+FILE_START
+FILE_CHUNK
+FILE_END
+ERROR
+```
+
+### 12.7 Asynchronous task queuing
+
+`CAP-007` provides the asynchronous model.
+
+A task can remain pending while an agent is unavailable and be delivered during a subsequent communication opportunity.
+
+Conceptually:
+
+```text
+Task created
+     ↓
+PENDING
+     ↓
+Agent unavailable
+     ↓
+Still pending
+     ↓
+Agent communicates
+     ↓
+SENT
+```
+
+### 12.8 Task execution
+
+`CAP-008` represents the actual execution model on the agent.
+
+The task is separated from the command implementation:
+
+```text
+Task
+ ↓
+Executor
+ ↓
+Command
+ ↓
+Execution
+ ↓
+Result
+```
+
+### 12.9 Result management
+
+`CAP-009` represents the server-side handling of results returned by agents.
+
+### 12.10 File transfer
+
+`CAP-010` extends the C2 communication model to file transfers.
+
+File transfer uses a dedicated transfer lifecycle rather than treating an entire file as an ordinary task result.
+
+### Conclusion
+
+```text
+Command & Control
+        │
+        ├── CAP-001
+        ├── CAP-002
+        ├── CAP-003
+        ├── CAP-004
+        ├── CAP-005
+        ├── CAP-006
+        ├── CAP-007
+        ├── CAP-008
+        ├── CAP-009
+        └── CAP-010
+```
+
+This is the **primary Kill Chain phase implemented by the project**.
+
+---
+
+## 13. Actions on Objectives
+
+The project includes several endpoint capabilities that can be associated with actions performed after C2 has been established.
+
+Relevant capabilities:
+
+```text
+CAP-019 SHELL
+CAP-020 SYSINFO
+CAP-021 FILES
+CAP-022 PERSISTENCE
+CAP-023 SELF_DESTRUCT
+```
+
+These capabilities are intentionally limited to the authorized academic laboratory scope.
+
+### 13.1 SHELL
+
+`CAP-019` allows the agent to execute supported shell commands.
+
+This should not be classified as Exploitation.
+
+The capability assumes the agent is already running.
+
+### 13.2 SYSINFO
+
+`CAP-020` gathers information from the endpoint.
+
+Examples may include:
+
+```text
+hostname
+operating system
+architecture
+```
+
+This is endpoint information collection rather than Kill Chain Reconnaissance.
+
+### 13.3 FILES
+
+`CAP-021` supports controlled file operations within the project's designed file-handling boundaries.
+
+It is associated with Actions on Objectives because it allows the operator to request file-related actions after communication with the endpoint has been established.
+
+### 13.4 PERSISTENCE
+
+`CAP-022` represents persistence functionality.
+
+Its exact supported mechanism and limitations remain an open design question.
+
+The capability is required, but its precise implementation boundaries must be defined before it is considered fully specified.
+
+### 13.5 SELF_DESTRUCT
+
+`CAP-023` represents a controlled endpoint lifecycle action.
+
+Its exact scope is tracked by `PRO-006`.
+
+Possible scopes identified during the design phase include:
+
+```text
+A. Process termination only
+
+B. Process termination
+   + temporary cleanup
+
+C. Process termination
+   + project workspace cleanup
+
+D. Full agent removal
+   + persistence cleanup
+```
+
+The project does not assume unrestricted deletion.
+
+Therefore:
+
+> **SELF_DESTRUCT is a controlled lifecycle capability, not unrestricted filesystem deletion.**
+
+### Conclusion
+
+```text
+Actions on Objectives
+        │
+        ├── CAP-019 SHELL
+        ├── CAP-020 SYSINFO
+        ├── CAP-021 FILES
+        ├── CAP-022 PERSISTENCE
+        └── CAP-023 SELF_DESTRUCT
+```
+
+The relationship is **partial**, because the project implements only selected endpoint actions rather than every possible objective.
+
+---
+
+## 14. Capability-to-Threat Traceability
+
+The capability catalogue can be connected to the project's threat model.
+
+Examples include:
+
+| Capability | Related threats |
+|---|---|
+| `CAP-004` Beaconing | `TM-022` |
+| `CAP-005` TCP/TLS | `TM-001`, `TM-003` |
+| `CAP-006` Application protocol | `TM-003`, `TM-004`, `TM-005` |
+| `CAP-007` Asynchronous task queuing | `TM-008`, `TM-020`, `TM-021` |
+| `CAP-019` SHELL | `TM-006`, `TM-007`, `TM-010` |
+| `CAP-021` FILES | `TM-011`, `TM-012`, `TM-013`, `TM-014`, `TM-016` |
+| `CAP-022` PERSISTENCE | `TM-010`, `TM-011` |
+| `CAP-023` SELF_DESTRUCT | `TM-023` |
+
+This allows the Kill Chain analysis to remain connected to the project's broader security documentation.
+
+---
+
+## 15. Important Capability Distinctions
+
+Several capabilities can appear superficially similar to Kill Chain phases but should not be equated with them.
+
+### File transfer ≠ complete Delivery
+
+File transfer allows data movement between the C2 and agent.
+
+It does not by itself implement the broader Delivery phase of an intrusion.
+
+### SHELL ≠ Exploitation
+
+A shell command is executed by an already-running agent.
+
+It does not represent vulnerability exploitation.
+
+### Agent deployment ≠ automatic persistence
+
+An agent being launched does not automatically imply that persistence mechanisms exist.
+
+Persistence is explicitly represented by `CAP-022`.
+
+### SELF_DESTRUCT ≠ unrestricted deletion
+
+The project intends `SELF_DESTRUCT` to be a controlled lifecycle operation.
+
+Its precise boundaries remain open under `PRO-006`.
+
+### SYSINFO ≠ Reconnaissance
+
+`SYSINFO` gathers endpoint information after the agent is already active.
+
+It is therefore treated as an endpoint action rather than a pre-compromise reconnaissance capability.
+
+---
+
+## 16. Scope Classification
+
+The project capability ranges are intentionally separated as follows.
 
 ### Required
 
 ```text
-CAP-001 → CAP-014
-except CAP-015–CAP-018
+CAP-001 – CAP-014
+CAP-019 – CAP-023
 ```
 
-More specifically:
+These capabilities form the current project delivery scope.
 
-- agent management;
-- session management;
-- multi-agent management;
-- beaconing;
-- TCP/TLS;
-- application protocol;
-- asynchronous task queuing;
-- task execution;
-- result management;
-- file transfer;
-- persistent metadata;
-- controlled file storage;
-- CLI;
-- Linux support.
-
-The required endpoint task capabilities are:
+### Bonus
 
 ```text
-CAP-019 — SHELL
-CAP-020 — SYSINFO
-CAP-021 — FILES
+CAP-015
 ```
 
-### Scope still open
+`CAP-015` corresponds to Windows support.
+
+### Future
 
 ```text
-CAP-022 — PERSISTENCE
-CAP-023 — SELF_DESTRUCT
+CAP-016 – CAP-018
 ```
 
-### Bonus / future
+These represent architectural extensions:
 
 ```text
-CAP-015 — Windows
-CAP-016 — TUI
-CAP-017 — Web interface
-CAP-018 — Additional transports
+CAP-016  TUI interface
+CAP-017  Web interface
+CAP-018  Additional transports
 ```
 
-This classification should remain synchronized with `requirements-mapping.md` and `DECISIONS.md`.
+This classification describes **scope**, not implementation maturity.
 
 ---
 
-# 19. Conclusion
+## 17. Relationship with Project Architecture
 
-C2-AUTOMATED is primarily a **C2 communication and task-management project**.
+The Kill Chain mapping corresponds directly to the project architecture.
 
-Its principal capability chain is:
+The main C2 architecture is:
 
 ```text
-Agent management
-      ↓
-Beaconing
-      ↓
-TCP/TLS
-      ↓
+Operator
+   │
+   ▼
+Interface
+   │
+   ▼
+C2 Core
+   │
+   ├── Agent Manager
+   ├── Session Manager
+   ├── Task Manager
+   ├── Result Manager
+   └── File Manager
+   │
+   ▼
 Protocol
-      ↓
-Sessions
-      ↓
-Tasks
-      ↓
-Execution
-      ↓
-Results
-      ↓
-File Transfer
-      ↓
-Multi-agent operation
+   │
+   ▼
+Transport
+   │
+   ▼
+Agent
+   │
+   ├── Executor
+   ├── Commands
+   └── Platform
 ```
 
-It additionally provides selected endpoint capabilities:
+This supports the interpretation that:
+
+- the C2 core corresponds primarily to **Command & Control**;
+- the endpoint command layer contains selected **Actions on Objectives** capabilities;
+- `PERSISTENCE` creates a limited relationship with **Installation**;
+- the remaining Kill Chain phases are either partially related or outside the project's scope.
+
+---
+
+## 18. Overall Assessment
+
+The project should be understood as:
 
 ```text
-SHELL
-SYSINFO
-FILES
-PERSISTENCE*
-SELF_DESTRUCT*
+                C2-AUTOMATED
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+ Command & Control       Endpoint actions
+          │                     │
+   CAP-001–CAP-010       CAP-019–CAP-023
+                                  │
+                         selected Kill Chain
+                              relationships
 ```
 
-where `PERSISTENCE` and `SELF_DESTRUCT` remain subject to explicit scope decisions.
+It does **not** constitute a complete implementation of the Cyber Kill Chain.
 
-The resulting Kill Chain interpretation is:
+The strongest representation is:
 
-> **C2-AUTOMATED primarily represents the Command and Control phase, with selected endpoint capabilities associated with Actions on Objectives. It does not implement a complete intrusion chain from Reconnaissance through Exploitation.**
+> **C2-AUTOMATED primarily implements Command and Control, with selected endpoint capabilities associated with Actions on Objectives and a limited relationship with Installation through PERSISTENCE.**
 
-The capability matrix at the beginning of this document is the reference for this interpretation. Any future scope change should update that matrix first, after which the Kill Chain mapping, requirements traceability, countermeasures, and testing documentation can be adjusted accordingly.
+The purpose of this mapping is therefore to demonstrate the project's position within the attack lifecycle without overstating its capabilities.
