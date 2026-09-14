@@ -1,26 +1,34 @@
-# `docs/protocol.md`
-
-```markdown
 # Protocol Specification
 
 > **Status: Work in Progress**
 >
-> This document describes the current protocol design between the C2 server
-> and agents. Message structures and fields may evolve as implementation
-> requirements are clarified.
+> This document defines the current logical communication contract between the
+> C2 server and agents. Exact field types, serialization, timeout values, and
+> some reliability details may evolve during implementation.
 
 ## 1. Purpose
 
-The protocol defines the logical messages exchanged between the C2 server
-and agents.
+The protocol defines the logical messages exchanged between the C2 server and
+agents.
 
 It is intentionally separated from the transport layer:
 
 > **Protocol = what is exchanged**
-
+>
 > **Transport = how it is transmitted**
 
 The current mandatory transport is TCP/TLS.
+
+The protocol represents communication related to:
+
+- agent registration;
+- periodic agent communication;
+- active liveness checks;
+- task dispatch and acknowledgement;
+- task status queries and reports;
+- task results;
+- file transfers;
+- errors.
 
 ---
 
@@ -29,1283 +37,746 @@ The current mandatory transport is TCP/TLS.
 The protocol layer is responsible for:
 
 - defining message types;
-- defining message structure;
+- defining the common message envelope;
 - serializing messages;
 - deserializing received messages;
-- validating message structure;
-- associating messages with agents, tasks, sessions, and transfers.
+- validating message structure and fields;
+- carrying correlation identifiers;
+- representing task, result, session, and transfer references.
 
-The protocol does not manage sockets or implement C2 business logic.
+The protocol does **not**:
 
----
+- manage sockets;
+- own task state;
+- own agent state;
+- execute commands;
+- manage database persistence;
+- implement business-level task transitions.
 
-## 3. Message Envelope
-
-Messages are expected to contain common metadata allowing the receiving side
-to identify and process them correctly.
-
-The current conceptual envelope is:
-
-```text
-Message
-├── version
-├── message_id
-├── agent_id
-├── type
-├── timestamp
-└── payload
-```
-
-The exact field types and serialization format remain to be defined.
-
----
-
-## 4. Message Types
-
-The current architecture identifies the following logical message types:
-
-```text
-REGISTER
-BEACON
-TASK
-RESULT
-FILE_START
-FILE_CHUNK
-FILE_END
-ERROR
-```
-
-These message types are described at a conceptual level below.
-
----
-
-## 5. `REGISTER`
-
-Used when an agent establishes its identity with the C2 server.
-
-Conceptually, registration may provide information such as:
-
-```text
-agent_id
-hostname
-operating_system
-architecture
-agent information
-```
-
-The exact registration contract remains to be defined.
-
----
-
-## 6. `BEACON`
-
-Used for the agent's periodic communication cycle.
-
-A beacon may communicate the agent's current state and provide an opportunity
-for the server to deliver pending work.
-
-The exact beacon contents and timing behaviour remain to be defined.
-
----
-
-## 7. `TASK`
-
-Represents a task sent by the C2 server to an agent.
-
-Conceptually:
-
-```text
-TASK
-├── task_id
-├── agent_id
-├── command_type
-└── parameters
-```
-
-The agent should validate the task before passing it to the execution layer.
-
----
-
-## 8. `RESULT`
-
-Represents the outcome of an executed task.
-
-Conceptually:
-
-```text
-RESULT
-├── result_id
-├── task_id
-├── agent_id
-├── status
-├── timestamp
-└── data
-```
-
-The C2 server uses the task identifier to associate the result with the
-corresponding task.
-
----
-
-## 9. File Transfer Messages
-
-File transfers are represented separately from ordinary results.
-
-The current conceptual sequence is:
-
-```text
-FILE_START
-    ↓
-FILE_CHUNK
-    ↓
-FILE_CHUNK
-    ↓
-...
-    ↓
-FILE_END
-```
-
-File-transfer details are documented separately in
-[`file-transfer.md`](file-transfer.md).
-
----
-
-## 10. `ERROR`
-
-Represents a protocol, processing, or execution error.
-
-The final structure should provide enough information to identify the
-associated operation without unnecessarily exposing sensitive internal data.
-
----
-
-## 11. Message Validation
-
-Received messages must be validated before being passed to application logic.
-
-Conceptually:
+Incoming messages are routed after validation:
 
 ```text
 Network Input
       ↓
 Transport
       ↓
-Message Deserialization
+Deserialization
       ↓
 Validation
       ↓
-Application Logic
-```
-
-Validation should verify, where applicable:
-
-- message type;
-- required fields;
-- field types;
-- identifiers;
-- message structure;
-- protocol version;
-- payload constraints.
-
-Invalid messages should be rejected in a controlled manner.
-
----
-
-## 12. Message Correlation
-
-Identifiers are required to associate related operations.
-
-The architecture currently expects relationships such as:
-
-```text
-Agent
-  │
-  └── Task
-        │
-        └── Result
-```
-
-File transfers similarly require their own transfer identity so that individual
-transfer messages can be associated with the correct operation.
-
-The exact identifier and correlation strategy remains to be finalized.
-
----
-
-## 13. Versioning
-
-The protocol contains a version field so that protocol evolution can be
-handled explicitly.
-
-Future changes to message structures should consider compatibility between
-the C2 server and agent.
-
-The exact versioning policy remains to be defined.
-
----
-
-## 14. Serialization
-
-Serialization converts internal protocol objects into their transmissible
-representation.
-
-Deserialization performs the reverse operation.
-
-The exact serialization format has not yet been finalized.
-
----
-
-## 15. Transport Independence
-
-The logical protocol should remain independent of the underlying transport.
-
-Conceptually:
-
-```text
-                    Protocol
-                       │
-             ┌─────────┴─────────┐
-             ▼                   ▼
-         TCP/TLS              Other
-          (MVP)            transports
-```
-
-A new transport should not require redesigning the logical message model.
-
----
-
-## 16. Open Questions
-
-The following remain to be finalized:
-
-- exact message envelope;
-- serialization format;
-- exact field types;
-- protocol versioning policy;
-- authentication / agent identity mechanism;
-- error message structure;
-- timeout and retry semantics;
-- exact file-transfer metadata.
-
-These questions should be resolved before the protocol implementation is
-considered stable.
-```
-
----
-
-# `docs/task-lifecycle.md`
-
-```markdown
-# Task Lifecycle
-
-> **Status: Work in Progress**
->
-> This document describes the current conceptual task model. State
-> transitions and implementation details may evolve during development.
-
-## 1. Purpose
-
-Tasks represent operations requested by the operator and executed by agents.
-
-The task system separates:
-
-- task creation;
-- task scheduling;
-- task delivery;
-- task execution;
-- result handling.
-
-This separation is required to support multiple agents and asynchronous
-operation.
-
----
-
-## 2. Task Ownership
-
-The lifecycle is divided between the C2 server and the agent.
-
-```text
-C2 Server
-    │
-    ├── create task
-    ├── track task
-    ├── dispatch task
-    └── process result
-          │
-          ▼
-        Agent
-          │
-          ├── receive task
-          ├── validate task
-          ├── execute task
-          └── generate result
-```
-
-The server manages the lifecycle while the agent performs the requested
-operation.
-
----
-
-## 3. Task States
-
-The current conceptual lifecycle is:
-
-```text
-            ┌─────────┐
-            │ PENDING │
-            └────┬────┘
-                 │
-                 ▼
-               SENT
-                 │
-                 ▼
-              RUNNING
-              /     \
-             /       \
-            ▼         ▼
-       COMPLETED     FAILED
-```
-
-### `PENDING`
-
-The task has been created but has not yet been successfully delivered to
-the agent.
-
-### `SENT`
-
-The task has been dispatched by the C2 server.
-
-### `RUNNING`
-
-The agent has accepted the task and is executing the associated operation.
-
-### `COMPLETED`
-
-The operation finished successfully and a corresponding result can be
-associated with the task.
-
-### `FAILED`
-
-The task could not be completed successfully.
-
-The exact distinction between delivery failure, execution failure, timeout,
-and cancellation remains to be finalized.
-
----
-
-## 4. Task Structure
-
-A task is conceptually associated with:
-
-```text
-task_id
-agent_id
-command_type
-parameters
-created_at
-sent_at
-completed_at
-status
-```
-
-Additional fields may be introduced if required by the final implementation.
-
----
-
-## 5. Task Creation
-
-The general creation flow is:
-
-```text
-Operator
-    ↓
-Interface
-    ↓
-C2 Core
-    ↓
-Task Manager
-    ↓
-Task = PENDING
-```
-
-The interface should not directly create network messages.
-
-The Task Manager owns the logical task lifecycle.
-
----
-
-## 6. Task Dispatch
-
-When a task is ready to be delivered:
-
-```text
-Task Manager
-    ↓
-Protocol
-    ↓
-Transport
-    ↓
-Agent
-```
-
-The transport layer is responsible only for communication.
-
-The protocol layer represents the task as a protocol message.
-
----
-
-## 7. Agent-Side Processing
-
-Once received:
-
-```text
-TASK
-  ↓
-Protocol validation
-  ↓
-Executor
-  ↓
-Command Handler
-  ↓
-Execution
-```
-
-The agent should validate the received task before passing it to the
-execution layer.
-
----
-
-## 8. Result Handling
-
-After execution:
-
-```text
-Command
-   ↓
-Executor
-   ↓
-Result
-   ↓
-Agent Protocol
-   ↓
-Transport
-   ↓
-C2 Protocol
-   ↓
-Result Manager
-```
-
-The C2 server associates the result with its originating task.
-
-```text
-Agent
-  │
-  └── Task T004
-        │
-        └── Result R009
-```
-
----
-
-## 9. Multiple Agents
-
-The task system is designed to support independent tasks for different
-agents.
-
-Conceptually:
-
-```text
-A001 → [T004, T005]
-A002 → [T006]
-A003 → [T007, T008]
-```
-
-A task belonging to one agent should not block unrelated task processing for
-another agent.
-
-This is part of the asynchronous multi-agent architecture.
-
----
-
-## 10. Failure Handling
-
-The final implementation should define behaviour for situations such as:
-
-- agent unavailable;
-- communication failure;
-- task timeout;
-- invalid task;
-- execution failure;
-- malformed result;
-- unexpected result;
-- duplicate result.
-
-The current architecture only establishes the principal `FAILED` state.
-Detailed failure states and recovery rules remain to be finalized.
-
----
-
-## 11. Task and Result Relationship
-
-A task should have a stable identifier used to associate its result.
-
-Conceptually:
-
-```text
-Task T004
-   │
-   └── Result R009
-```
-
-This provides traceability from the operator request to the resulting
-execution data.
-
----
-
-## 12. Open Questions
-
-The following remain to be finalized:
-
-- exact state machine;
-- timeout semantics;
-- retry behaviour;
-- cancellation behaviour;
-- task queue implementation;
-- task prioritization;
-- duplicate task handling;
-- duplicate result handling;
-- persistence rules for each state.
-```
-
----
-
-# `docs/file-transfer.md`
-
-```markdown
-# File Transfer
-
-> **Status: Work in Progress**
->
-> This document describes the current conceptual file-transfer design.
-> Transfer states, metadata, storage rules, and protocol details may evolve
-> during implementation.
-
-## 1. Purpose
-
-File transfer is treated as a dedicated application concern rather than as
-an ordinary task result.
-
-The design separates:
-
-1. file-transfer management;
-2. file storage;
-3. transport protection;
-4. file integrity verification.
-
----
-
-## 2. Responsibilities
-
-The main responsibilities are divided as follows:
-
-```text
-File Manager
-    │
-    ├── transfer lifecycle
-    ├── transfer state
-    ├── transfer metadata
-    └── transfer completion
-             │
-             ▼
-     File Storage Interface
-             │
-             ▼
-        Filesystem Storage
-```
-
-The File Manager does not own the physical storage implementation.
-
----
-
-## 3. Transfer Messages
-
-The current protocol design uses:
-
-```text
-FILE_START
-FILE_CHUNK
-FILE_END
-```
-
-A complete transfer therefore follows conceptually:
-
-```text
-FILE_START
-     ↓
-FILE_CHUNK
-     ↓
-FILE_CHUNK
-     ↓
-...
-     ↓
-FILE_END
-```
-
-The exact fields of each message will be defined in the protocol
-specification.
-
----
-
-## 4. Why Chunking?
-
-Files should be processed incrementally rather than requiring the complete
-file to remain in memory.
-
-Conceptually:
-
-```text
-chunk
-  ↓
-process
-  ↓
-write
-  ↓
-next chunk
-  ↓
-...
-```
-
-This provides a more scalable transfer mechanism for larger test files.
-
----
-
-## 5. C2-Side Storage
-
-The C2 server maintains a dedicated file workspace:
-
-```text
-data/
-└── files/
-    ├── uploads/
-    ├── downloads/
-    └── temporary/
-```
-
-Conceptually:
-
-```text
-uploads/
-    Files received by the C2 server.
-
-downloads/
-    Files prepared for transfer to agents.
-
-temporary/
-    Temporary files used while processing transfers.
-```
-
-The storage implementation is separated:
-
-```text
-storage/
-├── database/
-└── files/
-    ├── interface.py
-    └── filesystem.py
-```
-
----
-
-## 6. Agent-Side Storage
-
-The agent uses the same conceptual organization:
-
-```text
-data/
-└── files/
-    ├── uploads/
-    ├── downloads/
-    └── temporary/
-```
-
-with a file-storage abstraction under:
-
-```text
-storage/
-└── files/
-    ├── interface.py
-    └── filesystem.py
-```
-
-The agent therefore maintains a controlled local workspace for transfer-related
-files.
-
----
-
-## 7. Upload and Download Semantics
-
-The terms `upload` and `download` describe the direction relative to the
-component performing the operation.
-
-### Agent → C2
-
-Conceptually:
-
-```text
-Agent File
-    ↓
-Agent File Handling
-    ↓
-Protocol
-    ↓
-TLS Transport
-    ↓
-C2 Protocol
-    ↓
-C2 File Manager
-    ↓
-Temporary File
-    ↓
-Integrity Verification
-    ↓
-C2 File Storage
-```
-
-### C2 → Agent
-
-Conceptually:
-
-```text
-C2 File Storage
-    ↓
-C2 File Manager
-    ↓
-Protocol
-    ↓
-TLS Transport
-    ↓
-Agent Protocol
-    ↓
-Temporary File
-    ↓
-Integrity Verification
-    ↓
-Agent File Storage
-```
-
----
-
-## 8. Transfer Metadata
-
-A transfer should have a distinct identity so that multiple simultaneous
-transfers can be distinguished.
-
-Conceptually:
-
-```text
-transfer_id
-agent_id
-filename
-size
-status
-hash
-created_at
-completed_at
-storage_path
-```
-
-The exact metadata model remains to be finalized.
-
----
-
-## 9. Temporary Files
-
-Incoming file data should first be written to a temporary workspace.
-
-Conceptually:
-
-```text
-Incoming Chunks
+Message Router
       ↓
-Temporary File
-      ↓
-Transfer Completion
-      ↓
-Integrity Verification
-      ↓
-Final File
+Appropriate C2 Component
 ```
-
-If validation fails, the incomplete or invalid temporary artifact should not
-be promoted to the final storage location.
-
-Temporary files should be cleaned up when no longer required.
 
 ---
 
-## 10. Integrity Verification
+## 3. Domain Objects vs Protocol Messages
 
-File integrity is treated separately from transport confidentiality.
+The protocol is not the domain model.
 
-The intended mechanism is a cryptographic hash such as SHA-256.
+The project distinguishes:
 
 ```text
-Original File
-     ↓
-   SHA-256
-     ↓
-   Transfer
-     ↓
-Reconstructed File
-     ↓
-   SHA-256
-     ↓
-  Compare
-```
-
-A mismatch indicates that the reconstructed content does not match the
-expected content.
-
-The exact point at which the expected hash is transmitted and validated
-remains part of the protocol design.
-
----
-
-## 11. Encryption in Transit
-
-File transfers use the same protected communication channel as other C2-Agent
-traffic.
-
-```text
-File
-  ↓
-Protocol
-  ↓
-TLS
-  ↓
-Encrypted Network
-  ↓
-TLS
-  ↓
-File
-```
-
-Application-level encryption of individual files is not required for the MVP
-solely to provide confidentiality during network transmission.
-
----
-
-## 12. Encryption at Rest
-
-Encryption at rest is considered separately from encryption in transit.
-
-Current decision:
-
-```text
-Encryption in transit
-    → TLS
-
-File integrity
-    → cryptographic hash
-
-Application-level encryption at rest
-    → not mandatory for MVP
-```
-
-Additional encryption at rest may be considered later as a defense-in-depth
-feature.
-
----
-
-## 13. Path Handling
-
-Externally supplied file names and paths must not be trusted directly.
-
-The implementation should ensure that transfer-related paths remain inside
-the intended file-storage workspace.
-
-Path validation is therefore part of the security requirements of the
-transfer subsystem.
-
----
-
-## 14. Failure Scenarios
-
-The implementation should define behaviour for:
-
-- interrupted transfers;
-- missing chunks;
-- unexpected chunks;
-- duplicate chunks;
-- invalid transfer identifiers;
-- storage failures;
-- integrity-check failures;
-- invalid file metadata;
-- incomplete temporary files.
-
-The detailed transfer state machine remains to be finalized.
-
----
-
-## 15. Open Questions
-
-The following remain to be decided:
-
-- exact transfer state machine;
-- chunk numbering;
-- transfer ordering guarantees;
-- expected hash representation;
-- resumable transfers;
-- retry behaviour;
-- maximum transfer size;
-- temporary-file naming;
-- cleanup policy;
-- exact protocol fields.
-```
-
----
-
-# `docs/data-model.md`
-
-```markdown
-# Data Model
-
-> **Status: Work in Progress**
->
-> This document describes the current conceptual domain model. Fields,
-> relationships, and persistence details may change as the implementation is
-> designed.
-
-## 1. Purpose
-
-The system contains several central domain objects shared conceptually
-between the C2 server, the agent, and the protocol.
-
-The main objects currently identified are:
-
-```text
-Agent
-Session
 Task
+    = work requested by the C2
+
 Result
+    = outcome produced by that work
+
 Message
-File Transfer
+    = one protocol communication unit
+
+Event
+    = agent/system communication that does not necessarily represent a task
 ```
 
-The purpose of this document is to describe their conceptual relationships
-before the final database schema is implemented.
+For example, one Task can generate several messages:
+
+```text
+Task T001
+ ├── TASK
+ ├── TASK_ACK
+ ├── TASK_STATUS
+ └── RESULT
+```
+
+A `BEACON`, `REGISTER`, or `PONG` does not require a Task to exist.
 
 ---
 
-# 2. Agent
+## 4. Message Envelope
 
-An **Agent** represents the persistent identity of an endpoint running the
-agent software.
-
-Conceptually:
-
-```text
-Agent
-├── agent_id
-├── hostname
-├── operating_system
-├── architecture
-├── address
-├── status
-├── last_seen
-└── transport
-```
-
-The exact fields remain to be finalized.
-
-An Agent is distinct from a Session.
-
----
-
-# 3. Session
-
-A **Session** represents a communication instance associated with an Agent.
-
-Conceptually:
-
-```text
-Agent A001
-    │
-    └── Session S42
-          ├── connection state
-          ├── transport
-          └── communication state
-```
-
-An agent may therefore have multiple sessions over time.
-
-For example:
-
-```text
-Agent A001
-    │
-    ├── Session S01
-    │      └── disconnected
-    │
-    └── Session S02
-           └── active
-```
-
-The exact session lifecycle remains to be defined.
-
----
-
-# 4. Task
-
-A **Task** represents an operation requested for an Agent.
-
-Conceptually:
-
-```text
-Task
-├── task_id
-├── agent_id
-├── command_type
-├── parameters
-├── created_at
-├── sent_at
-├── completed_at
-└── status
-```
-
-The task lifecycle is documented in
-[`task-lifecycle.md`](task-lifecycle.md).
-
----
-
-# 5. Result
-
-A **Result** represents data returned after a Task has been processed.
-
-Conceptually:
-
-```text
-Result
-├── result_id
-├── task_id
-├── agent_id
-├── status
-├── timestamp
-└── data
-```
-
-The primary relationships are:
-
-```text
-Agent
-  │
-  └── Task
-        │
-        └── Result
-```
-
-This provides traceability between an agent, its task, and the resulting data.
-
----
-
-# 6. Message
-
-A **Message** represents a protocol-level communication unit.
-
-Conceptually:
+Messages use a common conceptual envelope:
 
 ```text
 Message
 ├── version
 ├── message_id
 ├── agent_id
+├── session_id?
 ├── type
 ├── timestamp
 └── payload
 ```
 
-Messages are exchanged between the C2 server and agent.
+Depending on the message type, the payload or envelope also carries:
 
-A message may represent:
+```text
+task_id?
+result_id?
+transfer_id?
+```
+
+The exact wire representation remains to be finalized.
+
+---
+
+## 5. Identifier Semantics
+
+The protocol uses distinct identifiers:
+
+```text
+agent_id
+    → identifies the logical agent
+
+session_id
+    → identifies a communication session
+
+task_id
+    → identifies one logical task
+
+result_id
+    → identifies one result
+
+transfer_id
+    → identifies one file transfer
+
+message_id
+    → identifies one specific protocol message
+```
+
+A single logical task may therefore produce several messages:
+
+```text
+T001
+ ├── M100 TASK
+ ├── M101 TASK_ACK
+ ├── M102 TASK_STATUS
+ └── M103 RESULT
+```
+
+`message_id` is used for communication-level tracing and duplicate detection.
+`task_id` is used for logical task correlation.
+
+---
+
+## 6. Message Catalogue
+
+### C2 → Agent
+
+```text
+TASK
+TASK_STATUS_QUERY
+PING
+```
+
+### Agent → C2
 
 ```text
 REGISTER
 BEACON
-TASK
+TASK_ACK
+TASK_STATUS
 RESULT
-FILE_START
-FILE_CHUNK
-FILE_END
+PONG
 ERROR
 ```
 
-The detailed protocol is documented in [`protocol.md`](protocol.md).
+### Bidirectional file-transfer messages
+
+```text
+FILE_START
+FILE_CHUNK
+FILE_END
+```
+
+`ERROR` may also be generated by either side when the protocol requires it.
+
+The protocol intentionally remains small. A new message type should only be
+added when a concrete requirement justifies it.
 
 ---
 
-# 7. File Transfer
+## 7. `REGISTER`
 
-A **File Transfer** represents the logical lifecycle of a file being transferred
-between the C2 server and an Agent.
+`REGISTER` is sent by an agent when establishing or re-establishing its
+identity with the C2.
 
 Conceptually:
 
 ```text
-File Transfer
-├── transfer_id
+REGISTER
 ├── agent_id
-├── filename
-├── size
+├── hostname
+├── operating_system
+├── architecture
+└── agent information
+```
+
+The C2 uses the message to:
+
+- identify the logical Agent;
+- create or update its Agent record;
+- associate the communication with a Session;
+- initialize or refresh known state.
+
+`REGISTER` is not a Task-related message.
+
+---
+
+## 8. `BEACON`
+
+`BEACON` is sent periodically by the agent according to its configured
+communication interval and jitter.
+
+Its purpose is routine check-in and lightweight state reporting.
+
+Conceptually, it may contain information such as:
+
+```text
+BEACON
+├── agent_id
+├── current_task_id?
+├── queued_task_count
+├── last_result_id?
+└── activity_state
+```
+
+The exact payload remains to be finalized.
+
+The C2 records activity such as:
+
+```text
+last_beacon
+last_seen
+```
+
+`BEACON` provides passive liveness information and may also provide an
+opportunity for the C2 to dispatch pending work.
+
+A missing beacon does not by itself prove that an agent has terminated.
+
+---
+
+## 9. `PING` / `PONG`
+
+`PING` and `PONG` provide an active, immediate liveness mechanism that is
+complementary to `BEACON`.
+
+### `PING`
+
+Sent by the C2 when it wants to know whether communication with an agent is
+currently possible.
+
+```text
+PING
+├── message_id
+├── agent_id
+└── timestamp
+```
+
+### `PONG`
+
+Sent by the agent in direct response to a valid `PING`.
+
+```text
+PONG
+├── message_id
+├── agent_id
+└── timestamp
+```
+
+Their meanings are deliberately different:
+
+```text
+BEACON
+→ routine agent-initiated check-in
+
+PING/PONG
+→ immediate C2-initiated connectivity check
+```
+
+A successful `PONG` proves current communication reachability, but does not
+prove anything about the state of a particular Task.
+
+---
+
+## 10. `TASK`
+
+`TASK` represents work requested by the C2.
+
+Conceptually:
+
+```text
+TASK
+├── message_id
+├── agent_id
+├── task_id
+├── command_type
+└── parameters
+```
+
+The logical meaning is:
+
+> "Please process Task `task_id`."
+
+The receiving agent must validate the Task before accepting it and passing it
+to its execution layer.
+
+---
+
+## 11. `TASK_ACK`
+
+`TASK_ACK` confirms that the agent received and accepted a Task.
+
+Conceptually:
+
+```text
+TASK_ACK
+├── message_id
+├── agent_id
+└── task_id
+```
+
+Its semantic meaning is:
+
+> "The agent received and accepted Task `task_id`."
+
+It does not mean that the Task has completed.
+
+After receiving `TASK_ACK`, the C2 knows that the Task is known by the agent.
+The Task may then be `QUEUED` or proceed directly to `RUNNING`, depending on
+agent scheduling.
+
+---
+
+## 12. `TASK_STATUS_QUERY`
+
+`TASK_STATUS_QUERY` is sent by the C2 when it needs to determine the state of a
+specific Task on the agent.
+
+Conceptually:
+
+```text
+TASK_STATUS_QUERY
+├── message_id
+├── agent_id
+└── task_id
+```
+
+The primary use case is recovery from uncertain communication, for example:
+
+```text
+TASK
+   ↓
+WAITING_ACK
+   ↓
+ACK timeout
+   ↓
+PING/PONG
+   ↓
+TASK_STATUS_QUERY
+```
+
+The C2 should determine the known Task state before blindly re-dispatching a
+Task that may already have been accepted or executed.
+
+---
+
+## 13. `TASK_STATUS`
+
+`TASK_STATUS` reports the agent's current knowledge/state for a Task.
+
+Conceptually:
+
+```text
+TASK_STATUS
+├── message_id
+├── agent_id
+├── task_id
 ├── status
-├── hash
-├── created_at
-├── completed_at
-└── storage_path
+└── result_id?
 ```
 
-A transfer may be associated with a Task where appropriate.
-
----
-
-# 8. Relationships
-
-The current conceptual model is:
+Possible reported values include:
 
 ```text
-                    ┌───────────┐
-                    │   Agent   │
-                    └─────┬─────┘
-                          │
-              ┌───────────┴───────────┐
-              │                       │
-              ▼                       ▼
-        ┌───────────┐          ┌───────────┐
-        │  Session  │          │   Task    │
-        └───────────┘          └─────┬─────┘
-                                    │
-                                    ▼
-                              ┌───────────┐
-                              │  Result   │
-                              └───────────┘
-
-                    Agent
-                      │
-                      ▼
-                File Transfer
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+UNKNOWN
 ```
-
-A more detailed model will be established once the database schema is
-designed.
-
----
-
-# 9. Identifiers
-
-The architecture currently distinguishes several identifiers:
-
-```text
-agent_id
-session_id
-task_id
-result_id
-message_id
-transfer_id
-```
-
-The purpose is to allow operations occurring concurrently to be associated
-with the correct entity.
-
-Identifiers should not be reused across unrelated entity types.
-
----
-
-# 10. Persistence
-
-The C2 server separates structured data from file contents.
-
-```text
-Structured Data
-      ↓
-Database Interface
-      ↓
-SQLite
-```
-
-while actual file contents use:
-
-```text
-File Data
-    ↓
-File Storage Interface
-    ↓
-Filesystem
-```
-
-Potential structured entities include:
-
-```text
-agents
-sessions
-tasks
-results
-file_transfers
-events
-```
-
-The final database schema remains to be defined.
-
----
-
-# 11. In-Memory vs Persistent State
-
-Not every piece of information necessarily needs to be treated identically.
-
-The implementation should distinguish between:
-
-- persistent domain information;
-- active communication/session state;
-- temporary transfer state;
-- temporary file data.
 
 For example:
 
 ```text
-Agent identity
-    → persistent
-
-Session connection state
-    → potentially active/in-memory + persistent metadata
-
-Task history
-    → persistent
-
-Temporary file reconstruction
-    → filesystem workspace
+TASK_STATUS
+    task_id = T001
+    status = QUEUED
 ```
 
-The exact persistence policy remains to be finalized.
+or:
+
+```text
+TASK_STATUS
+    task_id = T001
+    status = COMPLETED
+    result_id = R001
+```
+
+`UNKNOWN` means that the agent does not have the referenced Task in its
+known task state.
 
 ---
 
-# 12. Open Questions
+## 14. `RESULT`
 
-The following remain to be decided:
+`RESULT` represents an execution outcome produced by the agent.
 
-- exact fields for each entity;
-- primary keys;
-- relationships and foreign keys;
-- session persistence strategy;
-- task/result cardinality;
-- file-transfer/task relationship;
-- event/log persistence;
-- indexes;
-- retention policy;
-- synchronization between in-memory state and persistent state.
+Conceptually:
 
-These decisions should be made before the final database implementation is
-considered stable.
+```text
+RESULT
+├── message_id
+├── agent_id
+├── task_id?
+├── result_id
+├── status
+├── timestamp
+├── data
+└── error?
 ```
 
-I deliberately kept these as **working specifications**, not as "final truth". That matches the state of the project: we already have concrete concepts such as `REGISTER`, `BEACON`, `TASK`, `RESULT`, file-transfer messages, the task lifecycle, and the `Agent → Session / Task → Result` model, but several exact contracts were explicitly still open in the material you gave me.
+A normal task result contains its `task_id`.
 
-One structural point I would keep: **don't move these details back into `ARCHITECTURE.md` later just because they're becoming more precise**. The architecture should stay at the system/component level; these files are precisely where the detailed specifications should mature.
+For example:
+
+```text
+RESULT
+    task_id = T001
+    result_id = R001
+    status = SUCCESS
+    data = ...
+```
+
+The C2 associates the Result with the referenced Task when that Task exists.
+
+If a supplied `task_id` does not correspond to a known Task, the server must
+not silently create a Task. The Result is treated as unmatched/orphaned.
+
+---
+
+## 15. Unsolicited Agent Messages
+
+Not every agent message is a Task response.
+
+Examples:
+
+```text
+REGISTER
+BEACON
+PONG
+ERROR
+```
+
+The server therefore does not use a rule such as:
+
+```text
+Every incoming message → Task
+```
+
+Instead:
+
+```text
+Incoming Message
+       ↓
+Message Router
+       ├── REGISTER        → AgentManager / SessionManager
+       ├── BEACON          → AgentManager / SessionManager
+       ├── PONG            → Session / liveness handling
+       ├── TASK_ACK        → TaskManager
+       ├── TASK_STATUS     → TaskManager
+       ├── RESULT          → ResultManager
+       ├── FILE_*          → FileManager
+       └── ERROR           → appropriate handler
+```
+
+The Message Router routes messages but does not own the underlying domain
+state.
+
+---
+
+## 16. `ERROR`
+
+`ERROR` reports a protocol, processing, communication, or operation error.
+
+Conceptually:
+
+```text
+ERROR
+├── message_id
+├── agent_id
+├── task_id?
+├── transfer_id?
+├── error_code
+└── message
+```
+
+The exact error taxonomy remains to be finalized.
+
+Error contents should be sufficient for diagnosis without unnecessarily
+exposing sensitive internal information.
+
+---
+
+## 17. File Transfer Messages
+
+File transfers use:
+
+```text
+FILE_START
+FILE_CHUNK
+FILE_END
+```
+
+Transfers are correlated through `transfer_id`.
+
+For example:
+
+```text
+FILE_START
+    transfer_id = F001
+    task_id = T002
+```
+
+followed by multiple `FILE_CHUNK` messages and a final `FILE_END`.
+
+Detailed transfer semantics are defined in [`file-transfer.md`](file-transfer.md).
+
+---
+
+## 18. Message Correlation
+
+Current conceptual correlation requirements are:
+
+| Message | `agent_id` | `session_id` | `task_id` | `result_id` | `transfer_id` |
+|---|---|---|---|---|---|
+| `REGISTER` | Required | Optional | No | No | No |
+| `BEACON` | Required | Required | No | No | No |
+| `PING` | Required | Required | No | No | No |
+| `PONG` | Required | Required | No | No | No |
+| `TASK` | Required | Contextual | Required | No | Optional |
+| `TASK_ACK` | Required | Required | Required | No | No |
+| `TASK_STATUS_QUERY` | Required | Required | Required | No | No |
+| `TASK_STATUS` | Required | Required | Required | Optional | No |
+| `RESULT` | Required | Required | Optional | Required | No |
+| `FILE_START` | Required | Required | Optional | No | Required |
+| `FILE_CHUNK` | Required | Required | No | No | Required |
+| `FILE_END` | Required | Required | No | No | Required |
+| `ERROR` | Required | Required | Optional | Optional | Optional |
+
+This is the current conceptual contract; exact wire-level requirements remain
+subject to implementation.
+
+---
+
+## 19. Message Validation
+
+Messages received from the network must be treated as untrusted until
+validated.
+
+```text
+Network Input
+      ↓
+Transport
+      ↓
+Deserialization
+      ↓
+Protocol Validation
+      ↓
+Message Router
+      ↓
+Application Component
+```
+
+Validation should verify, where applicable:
+
+- protocol version;
+- message type;
+- required fields;
+- field types;
+- identifier format;
+- payload structure;
+- allowed status values;
+- message-specific constraints;
+- correlation rules.
+
+Invalid messages must be rejected in a controlled manner.
+
+---
+
+## 20. Duplicate Message Handling
+
+`message_id` provides communication-level duplicate detection.
+
+For example:
+
+```text
+M100 TASK T001
+M100 TASK T001
+```
+
+The receiving side can recognize that the same protocol message was received
+more than once.
+
+`task_id` provides logical Task correlation:
+
+```text
+TASK T001
+TASK_ACK T001
+TASK_STATUS T001
+RESULT T001
+```
+
+The agent should maintain bounded recent message/task history so that duplicate
+messages can be detected without unbounded runtime state.
+
+---
+
+## 21. Reliability and Recovery
+
+The protocol distinguishes:
+
+```text
+communication uncertainty
+        ≠
+task execution failure
+```
+
+For a missing acknowledgement:
+
+```text
+TASK
+  ↓
+WAITING_ACK
+  ↓
+ACK timeout
+  ↓
+PING
+  ↓
+PONG?
+```
+
+If `PONG` is received, the agent is reachable at that moment. The C2 should
+then query the specific Task:
+
+```text
+TASK_STATUS_QUERY(task_id)
+```
+
+Possible responses include:
+
+```text
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+UNKNOWN
+```
+
+This allows the C2 to recover its knowledge without blindly re-executing the
+Task.
+
+If `PONG` is not received after the defined health-check policy, the server
+may classify the Agent as unavailable/suspected dead and the current Session
+may become disconnected.
+
+`TIMEOUT` is therefore not synonymous with `FAILED`.
+
+Only when the Task is reported as `UNKNOWN` should re-dispatch become a possible
+next decision, subject to the final retry/idempotency policy.
+
+---
+
+## 22. Versioning
+
+The protocol contains a version field so protocol evolution can be handled
+explicitly.
+
+The final policy should define:
+
+- supported versions;
+- compatibility rules;
+- handling of unsupported versions;
+- version negotiation, if required.
+
+---
+
+## 23. Serialization
+
+Serialization converts protocol objects into their wire representation.
+Deserialization performs the reverse operation.
+
+The exact serialization format remains to be finalized.
+
+It must preserve, where applicable:
+
+- identifiers;
+- message type;
+- timestamp;
+- status;
+- payload structure;
+- file-transfer data.
+
+---
+
+## 24. Transport Independence
+
+The logical protocol remains independent of the transport:
+
+```text
+                    Protocol
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+          TCP/TLS              Other
+           (MVP)            transports
+```
+
+Changing the transport should not require redesigning the logical Task,
+Result, or state model.
+
+---
+
+## 25. Open Questions
+
+The following remain to be finalized:
+
+- exact serialization format;
+- exact field types;
+- exact protocol versioning policy;
+- authentication and agent identity mechanism;
+- ACK timeout and execution timeout values;
+- PING retry count and timing;
+- re-dispatch policy after `UNKNOWN`;
+- idempotency/deduplication storage details;
+- exact `BEACON` payload;
+- exact `TASK_STATUS` payload;
+- exact error taxonomy;
+- result recovery after a lost result;
+- exact file-transfer metadata.
+
+The message vocabulary and recovery principles above should be treated as the
+current protocol baseline before implementation.
