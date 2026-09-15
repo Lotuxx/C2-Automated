@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This document defines the architecture of the **C2-AUTOMATED** project.
+This document defines the high-level architecture of the **C2-AUTOMATED** project.
 
 It describes:
 
@@ -13,26 +13,64 @@ It describes:
 - the task and result flows;
 - the file-transfer architecture;
 - the storage model;
-- the security boundaries;
-- the main extensibility points.
+- the main security boundaries;
+- the principal extensibility points.
 
 The goal is to maintain a modular architecture in which major components can evolve independently without requiring a redesign of the entire system.
 
+This document defines the **architectural structure** of the project. Detailed state machines, protocol semantics, data models, and network behavior are defined in their respective documents.
+
 ---
 
-# 2. Global Architecture
+# 2. Authorized-Use Scope
 
-The system is composed of three main elements:
+**C2-AUTOMATED is an academic and laboratory project intended exclusively for authorized cybersecurity experimentation, development, testing, and demonstration.**
 
-- **Operator Interface** — provides the human operator with access to the C2.
-- **C2 Server** — coordinates agents, sessions, tasks, results, communication, and server-side storage.
-- **Agent** — runs on the endpoint, communicates with the C2 server, executes supported tasks, and returns results.
+The C2 server and Agent are designed to operate only in environments where the operator has explicit authorization to deploy, control, monitor, and test the participating systems.
+
+The intended environments include:
+
+- isolated cybersecurity laboratories;
+- virtual machines and test networks;
+- systems owned or explicitly controlled by the project operator;
+- authorized academic demonstrations;
+- controlled security-testing environments.
+
+The project must not be used to:
+
+- access systems without authorization;
+- deploy Agents on third-party systems without explicit permission;
+- obtain unauthorized access to data or infrastructure;
+- evade security controls on systems outside the authorized laboratory;
+- conduct unauthorized persistence, surveillance, or remote-control operations.
+
+The architecture may contain components that model capabilities commonly associated with command-and-control infrastructure. Their inclusion in this academic project does not extend the authorized scope of use.
+
+All implementation, testing, demonstrations, and deployment activities must remain within the authorized environment defined for the project.
+
+Security analysis and defensive considerations should therefore be evaluated with the project treated as a **controlled laboratory system**, rather than as infrastructure intended for unauthorized operational deployment.
+
+---
+
+# 3. Architectural Overview
+
+The system is composed of three principal elements:
+
+- **Operator Interface** — provides the human operator with access to the C2;
+- **C2 Server** — coordinates agents, sessions, tasks, results, communication, and server-side storage;
+- **Agent** — runs on an endpoint, communicates with the C2 server, executes supported tasks, and returns results.
 
 The fundamental architectural principle is:
 
-> **The C2 server manages agents and tasks; the agent executes tasks and returns results.**
+> **The C2 server manages agents, sessions, tasks, and coordination; the agent executes tasks and returns execution evidence and results.**
 
-## 2.1 High-Level Architecture
+The project follows a modular-monolithic architecture on the C2 side and a modular component architecture on the Agent side.
+
+---
+
+# 4. Global Architecture
+
+## 4.1 High-Level Architecture
 
 ```text
                          ┌───────────────────────┐
@@ -60,7 +98,7 @@ The fundamental architectural principle is:
                          │ Configuration         │
                          └───────────┬───────────┘
                                      │
-                               TCP/TLS (MVP)
+                                  TCP/TLS
                                      │
                     ┌────────────────┼────────────────┐
                     │                │                │
@@ -78,21 +116,45 @@ The fundamental architectural principle is:
               └────────────┘   └────────────┘   └────────────┘
 ```
 
-The server is designed to coordinate multiple agents simultaneously. Each agent independently maintains its own execution, platform-specific functionality, and local file storage.
+The C2 server is designed to coordinate multiple agents concurrently.
+
+Each Agent maintains its own:
+
+- identity;
+- communication logic;
+- execution state;
+- platform-specific functionality;
+- local transfer workspace.
+
+The C2 maintains the persistent server-side representation of the overall system.
 
 ---
 
-# 3. Architectural Principles
+# 5. Architectural Principles
 
-The system follows several principles that guide the implementation.
-
-## 3.1 Separation of Responsibilities
+## 5.1 Separation of Responsibilities
 
 Operator interfaces, application logic, protocol handling, transport, persistence, and endpoint execution are kept separate.
 
-This prevents one component from becoming responsible for unrelated concerns.
+A component should not become responsible for unrelated concerns.
 
-## 3.2 Protocol / Transport Separation
+For example:
+
+```text
+Interface
+    ↓
+C2 Core
+    ↓
+Protocol
+    ↓
+Transport
+```
+
+rather than allowing the operator interface to manipulate sockets or database records directly.
+
+---
+
+## 5.2 Protocol / Transport Separation
 
 The system distinguishes:
 
@@ -102,35 +164,94 @@ from:
 
 > **Transport = how it is transmitted**
 
-The same logical message should not need to be redesigned simply because the underlying transport changes.
+Logical protocol messages should remain independent from the underlying transport implementation.
 
-## 3.3 Beacon / Transport Separation
+This allows the transport implementation to evolve without redesigning the application-level protocol.
 
-On the agent:
+---
+
+## 5.3 Beacon / Transport Separation
+
+On the Agent:
 
 > **Beacon = when the agent communicates**
 
 > **Transport = how the communication is performed**
 
-The beacon therefore remains independent from the underlying network implementation.
-
-## 3.4 Multi-Agent Operation
-
-The server is designed to maintain several independent agent sessions and tasks simultaneously rather than relying on one blocking request/response exchange.
-
-## 3.5 Storage Abstraction
-
-Application logic should depend on storage interfaces rather than directly depending on a specific database or filesystem implementation.
-
-## 3.6 Platform Abstraction
-
-The agent separates common logic from platform-specific functionality so that Linux and future Windows support can coexist without spreading operating-system-specific logic throughout the entire agent.
+The beacon mechanism therefore does not directly depend on a particular network implementation.
 
 ---
 
-# 4. C2 Server Architecture
+## 5.4 Agent / Session Separation
 
-The C2 server uses a modular monolithic structure.
+An **Agent** represents a persistent endpoint identity.
+
+A **Session** represents a specific communication episode associated with that Agent.
+
+Therefore:
+
+```text
+Agent A001
+ ├── Session S041
+ ├── Session S042
+ └── Session S043
+```
+
+A new connection creates a new Session. A previous Session is never reopened as the current communication Session.
+
+This allows historical communication to remain associated with the Agent while new connections are represented independently.
+
+---
+
+## 5.5 Asynchronous Multi-Agent Operation
+
+The C2 is designed to manage multiple agents and multiple tasks without coupling an operator action to one blocking network request.
+
+Tasks, results, communication events, and sessions are therefore handled as independent domain objects.
+
+---
+
+## 5.6 Storage Abstraction
+
+Application logic depends on storage abstractions rather than directly depending on SQLite or the filesystem.
+
+This separates:
+
+```text
+Domain / Application Logic
+            │
+            ▼
+      Storage Interface
+         ┌──────┐
+         ▼      ▼
+      Database Files
+```
+
+---
+
+## 5.7 Platform Abstraction
+
+The Agent separates common logic from operating-system-specific functionality.
+
+The architecture therefore allows:
+
+```text
+Common Agent Logic
+        │
+        ▼
+Platform Abstraction
+      ┌─┴─┐
+      ▼   ▼
+    Linux Windows
+```
+
+Linux is the primary target. Windows is an extension/bonus target.
+
+---
+
+# 6. C2 Server Architecture
+
+The C2 server follows a modular-monolithic architecture.
 
 ```text
 c2_server/
@@ -139,6 +260,9 @@ c2_server/
 │
 ├── interface/
 │   ├── cli/
+│   │   ├── app.py
+│   │   ├── commands.py
+│   │   └── views.py
 │   ├── tui/
 │   └── web/
 │
@@ -148,7 +272,9 @@ c2_server/
 │   ├── session_manager.py
 │   ├── task_manager.py
 │   ├── result_manager.py
-│   └── file_manager.py
+│   ├── file_manager.py
+│   ├── message_router.py
+│   └── synchronization_manager.py
 │
 ├── protocol/
 │   ├── messages.py
@@ -160,33 +286,45 @@ c2_server/
 │   └── tcp_tls.py
 │
 ├── storage/
-│   ├── database/
-│   │   ├── interface.py
-│   │   ├── sqlite.py
-│   │   └── models.py
-│   │
-│   └── files/
-│       ├── interface.py
-│       └── filesystem.py
-│
-├── data/
-│   └── files/
-│       ├── uploads/
-│       ├── downloads/
-│       └── temporary/
+│   ├── interface.py
+│   ├── sqlite.py
+│   └── models.py
 │
 ├── logging/
+│   └── logger.py
+│
 ├── config/
+│   └── settings.py
+│
 └── tests/
 ```
 
+The server is divided into several architectural layers:
+
+```text
+Interface
+    │
+    ▼
+Core
+    │
+    ├── Protocol
+    │
+    ├── Transport
+    │
+    └── Storage
+```
+
+The Core coordinates these components without absorbing their implementation responsibilities.
+
 ---
 
-## 4.1 `main.py`
+# 7. C2 Entry Point
+
+## 7.1 `main.py`
 
 `main.py` is the entry point of the C2 server.
 
-Its role is to initialize and assemble the application components.
+Its primary responsibility is application initialization and component assembly.
 
 Conceptually:
 
@@ -202,11 +340,11 @@ main.py
    └── start operator interface
 ```
 
-`main.py` should remain an initialization layer rather than becoming a container for the main C2 business logic.
+`main.py` should remain an initialization layer rather than becoming a container for C2 business logic.
 
 ---
 
-## 4.2 Interface Layer
+# 8. Operator Interface
 
 Location:
 
@@ -217,13 +355,11 @@ interface/
 └── web/
 ```
 
-The interface layer provides operator-facing interfaces.
+The interface layer provides operator-facing access to the C2.
 
-The initial MVP uses a CLI. TUI and Web interfaces are treated as extensions.
+The initial MVP uses a CLI.
 
-All interfaces should interact with the same C2 core rather than implementing independent versions of the C2 logic.
-
-Conceptually:
+TUI and Web interfaces are architectural extension points and should reuse the same C2 core rather than implementing independent C2 logic.
 
 ```text
 Operator
@@ -235,11 +371,16 @@ CLI / TUI / Web
 C2 Core
 ```
 
-The interface layer should not directly manage sockets, TLS, database queries, or endpoint execution.
+The interface layer should not directly:
+
+- manage network sockets;
+- perform TLS operations;
+- execute endpoint commands;
+- manipulate database records directly.
 
 ---
 
-# 5. C2 Core
+# 9. C2 Core
 
 Location:
 
@@ -250,39 +391,50 @@ core/
 ├── session_manager.py
 ├── task_manager.py
 ├── result_manager.py
-└── file_manager.py
+├── file_manager.py
+├── message_router.py
+└── synchronization_manager.py
 ```
 
-The core contains the main application logic of the C2 server.
+The Core contains the main server-side application logic.
 
-## 5.1 `c2.py`
+Its components have distinct responsibilities.
+
+---
+
+## 9.1 `c2.py`
 
 `c2.py` acts as the main orchestration component.
 
-It coordinates the major server-side managers without taking over their individual responsibilities.
+It provides the main application-level boundary used by the operator interfaces and coordinates the other Core components.
 
 Conceptually:
 
 ```text
-                         C2
-                          │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-    Agent Manager    Task Manager    Result Manager
-          │
-          ├── Session Manager
-          └── File Manager
+                           C2
+                            │
+          ┌─────────────────┼──────────────────┐
+          ▼                 ▼                  ▼
+   Agent Manager      Task Manager      Result Manager
+          │                 │                  │
+          ▼                 ▼                  ▼
+   Session Manager    Message Router    File Manager
+                            │
+                            ▼
+                  Synchronization Manager
 ```
 
-The C2 core provides the main application-level boundary used by the operator interfaces.
+The exact internal call graph remains an implementation concern.
 
 ---
 
-## 5.2 `agent_manager.py`
+## 9.2 `agent_manager.py`
 
-The Agent Manager manages the logical representation of known agents.
+The Agent Manager manages the logical representation of known Agents.
 
-It can maintain information such as:
+It is responsible for Agent identity and Agent-level information.
+
+Examples include:
 
 ```text
 agent_id
@@ -290,143 +442,93 @@ hostname
 OS
 architecture
 address
-status
+health
+activity
 last_seen
-transport
 ```
 
-Its responsibility is to manage the **agent identity and logical state**.
-
-It does not:
+The Agent Manager does not:
 
 - execute commands;
-- directly manage sockets;
+- directly manage network sockets;
 - render the operator interface;
-- scatter SQL queries throughout the application.
+- embed database access throughout the application.
+
+Detailed Agent state semantics are defined in `state-machines.md` and `data-model.md`.
 
 ---
 
-## 5.3 `session_manager.py`
+## 9.3 `session_manager.py`
 
-The Session Manager handles communication-session state.
-
-An **agent** represents a persistent identity.
-
-A **session** represents a communication instance associated with that agent.
+The Session Manager manages communication Sessions associated with Agents.
 
 Conceptually:
 
 ```text
 Agent A001
     │
-    └── Session S42
-          ├── connection state
-          ├── transport
-          ├── last communication
-          └── communication state
+    ├── S041
+    ├── S042 = historical
+    └── S043 = current
 ```
 
-This distinction allows an agent to disconnect and reconnect while retaining its identity.
+A Session represents one communication episode.
+
+The architectural rule is:
 
 ```text
-connect
-   ↓
-communicate
-   ↓
-disconnect
-   ↓
-reconnect
-   ↓
-new session
+new connection
+      ↓
+new Session
+      ↓
+transport established
+      ↓
+Session CONNECTED
 ```
 
-The exact session state machine remains part of the detailed implementation design.
+Registration occurs over the already established Session and does not create or reopen the Session.
+
+Detailed Session states and transitions are defined in `state-machines.md`.
 
 ---
 
-## 5.4 `task_manager.py`
+## 9.4 `task_manager.py`
 
-The Task Manager creates and tracks tasks sent to agents.
+The Task Manager creates, dispatches, tracks, and recovers Tasks.
 
-The current conceptual lifecycle is:
-
-```text
-            ┌─────────┐
-            │ PENDING │
-            └────┬────┘
-                 │
-                 ▼
-               SENT
-                 │
-                 ▼
-              RUNNING
-              /     \
-             /       \
-            ▼         ▼
-       COMPLETED     FAILED
-```
-
-A task is conceptually associated with:
+The authoritative Task lifecycle is:
 
 ```text
-task_id
-agent_id
-command_type
-parameters
-created_at
-sent_at
-completed_at
-status
+PENDING
+   ↓
+WAITING_ACK
+   ↓
+QUEUED
+   ↓
+RUNNING
+   ├───────────────┐
+   ▼               ▼
+COMPLETED        FAILED
+   │
+   ├── TIMEOUT
+   └── CANCELLED
 ```
 
-The Task Manager allows the C2 to track multiple independent tasks without coupling task management directly to the network transport.
+The complete normative state model and transition rules are defined in:
+
+- `state-machines.md`;
+- `task-lifecycle.md`;
+- `protocol-state-transition.md`.
+
+A Task belongs to an Agent and is not owned by a Session.
+
+A Task may therefore survive a communication interruption and continue to be associated with the same Agent across multiple Sessions.
 
 ---
 
-## 5.5 Task Queue and Asynchronous Operation
+## 9.5 `result_manager.py`
 
-The server should not directly couple an operator command to a single blocking socket operation.
-
-Instead:
-
-```text
-Operator
-   │
-   ▼
-Interface
-   │
-   ▼
-Task Manager
-   │
-   ▼
-Task = PENDING
-   │
-   ▼
-Communication
-   │
-   ▼
-Agent
-```
-
-This provides the foundation for asynchronous multi-agent operation.
-
-Conceptually:
-
-```text
-TASK QUEUE
-
-A001 → [T004, T005]
-A002 → [T006]
-A003 → []
-```
-
-Several agents can therefore have independent tasks at the same time.
-
----
-
-## 5.6 `result_manager.py`
-
-The Result Manager handles results returned by agents.
+The Result Manager processes results returned by Agents.
 
 Conceptually:
 
@@ -435,15 +537,18 @@ Agent
    │
    │ RESULT
    ▼
+Message Router
+   │
+   ▼
 Result Manager
    │
-   ├── identify task
-   ├── associate result with agent
-   ├── persist result
-   └── expose result to operator
+   ├── identify Task
+   ├── validate Result
+   ├── persist Result
+   └── update relevant Task state
 ```
 
-A result is conceptually associated with:
+A Result is associated with:
 
 ```text
 result_id
@@ -454,48 +559,116 @@ timestamp
 data
 ```
 
-This creates traceability between:
+The Result represents execution evidence or returned data. It is therefore distinct from the Task lifecycle itself.
 
-```text
-Agent
-   │
-   └── Task
-        │
-        └── Result
-```
+Detailed Result semantics are defined in `data-model.md` and `task-lifecycle.md`.
 
 ---
 
-## 5.7 `file_manager.py`
+## 9.6 `file_manager.py`
 
-The File Manager handles the **logical lifecycle of file transfers**.
+The File Manager manages the logical lifecycle of file transfers.
 
-It is responsible for transfer-related concepts such as:
+Its responsibilities include:
 
-- transfer state;
-- association with tasks;
+- transfer coordination;
+- transfer metadata;
+- association with Tasks when applicable;
 - transfer completion;
-- file reconstruction;
-- integrity verification.
+- integrity verification;
+- interaction with file storage.
 
-It does not itself represent the physical storage mechanism.
+It does not represent the physical file-storage implementation.
 
 The separation is:
 
 ```text
-              File Manager
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-   Transfer metadata     File Storage
-          │                   │
-          ▼                   ▼
-      Database           Filesystem
+             File Manager
+                  │
+          ┌───────┴────────┐
+          ▼                ▼
+ Transfer Metadata     File Storage
+          │                │
+          ▼                ▼
+       Database         Filesystem
 ```
+
+Detailed transfer behavior is defined in `file-transfer.md`.
 
 ---
 
-# 6. Protocol Architecture
+## 9.7 `message_router.py`
+
+The Message Router is responsible for routing validated protocol messages to the appropriate Core component.
+
+Conceptually:
+
+```text
+Transport
+   │
+   ▼
+Protocol
+   │
+   ▼
+Validation
+   │
+   ▼
+Message Router
+   │
+   ├── Agent Manager
+   ├── Session Manager
+   ├── Task Manager
+   ├── Result Manager
+   ├── File Manager
+   └── Synchronization Manager
+```
+
+This prevents protocol-receiving logic from becoming distributed across unrelated components.
+
+The router is responsible for **dispatching messages**, not for implementing the complete business logic associated with each message.
+
+---
+
+## 9.8 `synchronization_manager.py`
+
+The Synchronization Manager handles reconciliation between the C2's persistent state and the Agent's local recovery state following a new communication Session.
+
+Conceptually:
+
+```text
+New Session
+    │
+    ▼
+REGISTER
+    │
+    ▼
+REGISTER_ACK
+    │
+    ▼
+SYNC_STATE
+    │
+    ▼
+Synchronization Manager
+    │
+    ├── compare known state
+    ├── identify missing information
+    ├── determine required updates
+    └── prepare synchronization response
+    │
+    ▼
+SYNC_STATE_RESPONSE
+    │
+    ▼
+SYNC_COMPLETE
+```
+
+Synchronization does not create a new Agent identity and does not reopen a previous Session.
+
+Detailed reconciliation behavior is defined in `reconnection-and-synchronization.md`.
+
+---
+
+# 10. Protocol Architecture
 
 Location:
 
@@ -506,59 +679,84 @@ protocol/
 └── validator.py
 ```
 
-The protocol defines the logical language exchanged between the server and agents.
+The protocol defines the logical communication language shared by the C2 and Agents.
 
-## 6.1 Message Types
+The protocol is intentionally separated from the transport layer.
 
-The architecture currently accounts for messages such as:
+---
+
+## 10.1 Message Types
+
+The architecture currently accounts for message categories including:
+
+### Registration and synchronization
 
 ```text
 REGISTER
+REGISTER_ACK
+SYNC_STATE
+SYNC_STATE_RESPONSE
+SYNC_COMPLETE
+```
+
+### Liveness
+
+```text
 BEACON
+BEACON_ACK
+PING
+PONG
+```
+
+### Task management
+
+```text
 TASK
+TASK_ACK
+TASK_STATUS_QUERY
+TASK_STATUS
+```
+
+### Results and errors
+
+```text
 RESULT
-FILE_START
-FILE_CHUNK
-FILE_END
 ERROR
 ```
 
-A message may contain common metadata such as:
+### File transfer
 
 ```text
-version
-message_id
-agent_id
-type
-timestamp
-payload
+FILE_START
+FILE_CHUNK
+FILE_END
 ```
 
-The exact protocol contract will be defined separately before implementation is finalized.
+The exact message contract is defined in `protocol.md`.
 
 ---
 
-## 6.2 `messages.py`
+## 10.2 `messages.py`
 
-Defines the supported message structures and message types.
-
----
-
-## 6.3 `serializer.py`
-
-Converts internal protocol representations into a transmissible representation and reconstructs received messages.
+Defines the supported protocol message structures and message types.
 
 ---
 
-## 6.4 `validator.py`
+## 10.3 `serializer.py`
 
-Validates incoming and outgoing messages against the defined protocol rules.
-
-This keeps message validation separate from the C2 business logic.
+Converts protocol representations into the transmissible representation and reconstructs received messages.
 
 ---
 
-# 7. Transport Architecture
+## 10.4 `validator.py`
+
+Validates messages before they reach application-level processing.
+
+Validation is a protocol responsibility and should occur before Core components act on received data.
+
+---
+
+# 11. Transport Architecture
 
 Location:
 
@@ -570,15 +768,21 @@ transport/
 
 The transport layer is responsible for network communication.
 
-## 7.1 Transport Interface
+The application and protocol layers should not depend directly on sockets or a specific transport implementation.
+
+---
+
+## 11.1 Transport Interface
 
 `interface.py` defines the abstraction used by the application for communication.
 
-The higher application layers should not depend directly on sockets or a specific transport implementation.
+The transport interface allows the rest of the system to work with a transport without depending on its implementation details.
 
-## 7.2 TCP/TLS
+---
 
-`tcp_tls.py` provides the mandatory MVP transport implementation.
+## 11.2 TCP/TLS
+
+`tcp_tls.py` provides the mandatory MVP transport.
 
 The current extension model is:
 
@@ -590,40 +794,162 @@ Transport Interface
        └── DNS         ← possible extension
 ```
 
-These additional transports are not part of the mandatory implementation.
+Additional transports are not part of the mandatory MVP.
 
 ---
 
-# 8. Storage Architecture
+# 12. Communication Architecture
 
-Storage is divided into structured persistent data and physical file storage.
+The communication architecture is layered:
 
 ```text
-storage/
-├── database/
-└── files/
+Application / Core
+        │
+        ▼
+Protocol
+        │
+        ▼
+Transport
+        │
+        ▼
+Network
+        │
+        ▼
+Transport
+        │
+        ▼
+Protocol
+        │
+        ▼
+Application / Core
 ```
 
-This follows the principle:
+The principal conceptual distinction is:
 
-> **Database = structured metadata**
+```text
+Beacon
+  │
+  │ determines when
+  ▼
+Transport
+  │
+  │ determines how
+  ▼
+Protocol
+  │
+  │ determines what
+  ▼
+Core
+  │
+  │ determines what the system does
+```
+
+The complete network architecture is defined in `network-architecture.md`.
+
+The complete protocol behavior is defined in `protocol.md` and `protocol-state-transition.md`.
+
+---
+
+# 13. Registration, Session and Synchronization
+
+A new Agent communication episode follows this architectural sequence:
+
+```text
+Agent
+  │
+  ▼
+Establish TCP/TLS connection
+  │
+  ▼
+New Session
+  │
+  ▼
+Session CONNECTED
+  │
+  ▼
+REGISTER
+  │
+  ▼
+C2 identifies Agent
+  │
+  ▼
+REGISTER_ACK(session_id)
+  │
+  ▼
+Agent communication SYNCHRONIZING
+  │
+  ▼
+SYNC_STATE
+  │
+  ▼
+State reconciliation
+  │
+  ▼
+SYNC_STATE_RESPONSE
+  │
+  ▼
+SYNC_COMPLETE
+  │
+  ▼
+Normal communication
+```
+
+The important architectural distinction is:
+
+```text
+Session state
+    ≠
+Agent communication state
+```
+
+For example, during synchronization:
+
+```text
+Session = CONNECTED
+Agent communication = SYNCHRONIZING
+```
+
+Registration does not cause the Session to become `CONNECTED`; transport establishment does.
+
+Detailed state semantics are defined in `state-machines.md`.
+
+---
+
+# 14. Storage Architecture
+
+Storage is divided between structured persistent data and physical file data.
+
+```text
+                         Storage
+                            │
+                ┌───────────┴───────────┐
+                ▼                       ▼
+          Structured Data          File Contents
+                │                       │
+                ▼                       ▼
+             SQLite                Filesystem
+```
+
+The principle is:
+
+> **Database = structured metadata and persistent domain state**
 
 > **File storage = actual file contents**
 
 ---
 
-## 8.1 Database Storage
+## 14.1 Database Storage
 
 Location:
 
 ```text
-storage/database/
+storage/
 ├── interface.py
 ├── sqlite.py
 └── models.py
 ```
 
-The database stores structured application information such as:
+The database stores structured information such as:
 
 ```text
 agents
@@ -636,7 +962,7 @@ events
 
 ### `interface.py`
 
-Defines the storage abstraction used by the application.
+Defines the database storage abstraction.
 
 ### `sqlite.py`
 
@@ -644,39 +970,35 @@ Provides the SQLite implementation.
 
 ### `models.py`
 
-Defines the persistence-layer data models.
+Defines persistence-layer models.
 
-The C2 core should interact with the storage abstraction rather than directly embedding database queries throughout application logic.
+The Core should interact with the storage abstraction rather than embedding database-specific queries throughout the application.
 
 ---
 
-## 8.2 File Storage
+## 14.2 File Storage
 
-Location:
+The file-storage abstraction handles physical file data separately from structured metadata.
+
+The C2 architecture uses:
 
 ```text
-storage/files/
-├── interface.py
-└── filesystem.py
+File Manager
+      │
+      ▼
+File Storage Interface
+      │
+      ▼
+Filesystem Implementation
 ```
 
-This layer handles the persistence of actual file data.
-
-### `interface.py`
-
-Defines the file-storage abstraction.
-
-### `filesystem.py`
-
-Provides the filesystem implementation.
-
-The File Manager uses this abstraction rather than being responsible for the physical storage implementation itself.
+The exact transfer lifecycle is defined in `file-transfer.md`.
 
 ---
 
-# 9. Server File Organization
+# 15. Server File Organization
 
-Actual file data is stored separately from the storage implementation:
+The C2 maintains a dedicated file workspace:
 
 ```text
 data/
@@ -686,45 +1008,29 @@ data/
     └── temporary/
 ```
 
-These directories represent the server-side file workspace.
+Conceptually:
 
 ```text
 uploads/
-    Files received by the server.
+    Files received by the C2.
 
 downloads/
-    Files prepared for or retrieved for transfer to an agent.
+    Files prepared for transfer to an Agent.
 
 temporary/
-    Temporary workspace used while processing transfers.
+    Temporary transfer workspace.
 ```
 
-The conceptual relationship is:
-
-```text
-File Manager
-      │
-      ▼
-File Storage Interface
-      │
-      ▼
-Filesystem Storage
-      │
-      ▼
-data/files/
-```
-
-File transfers should be handled incrementally so that large files do not need to be loaded entirely into memory.
+The physical organization is an implementation detail of the file-storage layer and should not be confused with the logical transfer lifecycle.
 
 ---
 
-# 10. Agent Architecture
+# 16. Agent Architecture
 
-The agent follows the same principle of separation of concerns while adding components specific to endpoint execution.
+The Agent follows the same separation-of-concerns principle while adding endpoint-specific components.
 
 ```text
 agent/
-│
 ├── core/
 ├── beacon/
 ├── protocol/
@@ -749,11 +1055,11 @@ agent/
 
 ---
 
-## 10.1 Core
+## 16.1 Core
 
-The agent core contains the central agent logic, identity, and internal state.
+The Agent Core contains common Agent logic and internal state.
 
-Conceptually, it can maintain information such as:
+It maintains information such as:
 
 ```text
 agent_id
@@ -764,11 +1070,13 @@ configuration
 state
 ```
 
+The Core does not directly implement individual commands or platform-specific operations.
+
 ---
 
-## 10.2 Beacon
+## 16.2 Beacon
 
-The Beacon component manages **when** the agent communicates.
+The Beacon component manages when the Agent communicates.
 
 It handles concepts such as:
 
@@ -778,65 +1086,76 @@ jitter
 retry
 ```
 
-The beacon remains separate from the transport implementation.
+The Beacon remains independent of the transport implementation.
 
 ```text
 Beacon
   │
-  │ determines when communication occurs
+  │ determines when
   ▼
 Transport
   │
-  │ determines how communication occurs
+  │ determines how
   ▼
 Network
 ```
 
----
-
-## 10.3 Protocol
-
-The agent implements the same logical protocol as the C2 server.
-
-Its role is to interpret and generate protocol messages according to the shared communication contract.
+Detailed liveness and communication behavior is defined in `state-machines.md`.
 
 ---
 
-## 10.4 Transport
+## 16.3 Protocol
 
-The agent-side transport manages network communication with the C2 server.
+The Agent implements the same logical protocol contract as the C2.
 
-The implementation remains independent from the logical protocol.
+Its responsibilities include:
+
+- constructing protocol messages;
+- parsing received messages;
+- validating messages;
+- passing valid messages to the appropriate Agent component.
 
 ---
 
-## 10.5 Executor
+## 16.4 Transport
 
-The Executor receives tasks and dispatches them to the appropriate command implementation.
+The Agent-side transport manages communication with the C2.
 
-The conceptual flow is:
+The transport implementation remains independent from the logical protocol.
+
+---
+
+## 16.5 Executor
+
+The Executor receives Tasks and dispatches them to the appropriate command implementation.
+
+Conceptually:
 
 ```text
 TASK
-  ↓
+  │
+  ▼
 Executor
-  ↓
+  │
+  ▼
 Command Handler
-  ↓
+  │
+  ▼
 Execution
-  ↓
+  │
+  ▼
 Result
 ```
 
-This separates task dispatching from the actual implementation of individual commands.
+The Executor therefore separates Task dispatch from the implementation of individual commands.
 
 ---
 
-## 10.6 Commands
+## 16.6 Commands
 
-The command layer contains the operations that the agent can perform.
+The command layer contains the operations supported by the Agent.
 
-The current architecture accounts for:
+The architecture may expose operations such as:
 
 ```text
 SHELL
@@ -846,15 +1165,17 @@ PERSISTENCE
 SELF_DESTRUCT
 ```
 
-The logical operation can remain consistent while the underlying implementation differs by operating system.
+The exact command set and contracts remain subject to the project requirements and implementation constraints.
+
+Commands should remain behind the Executor boundary rather than being directly invoked by the communication layer.
 
 ---
 
-## 10.7 Platform
+## 16.7 Platform
 
-The platform layer isolates operating-system-specific functionality.
+The Platform layer isolates operating-system-specific functionality.
 
-The intended structure is:
+Conceptually:
 
 ```text
 Common Agent Logic
@@ -866,15 +1187,15 @@ Platform Abstraction
     Linux Windows
 ```
 
-Linux is the primary target. Windows is considered a bonus extension.
+Linux is the primary implementation target.
 
-This separation reduces platform-specific logic leaking into the rest of the agent.
+Windows support is an extension/bonus objective.
 
 ---
 
-# 11. Agent-Side File Architecture
+# 17. Agent-Side File Architecture
 
-The agent maintains its own controlled file-storage workspace.
+The Agent maintains its own controlled file-storage workspace.
 
 ```text
 storage/
@@ -893,7 +1214,7 @@ data/
     └── temporary/
 ```
 
-The separation is:
+The conceptual relationship is:
 
 ```text
 Agent File Operations
@@ -908,93 +1229,13 @@ Filesystem Storage
 data/files/
 ```
 
-The agent therefore has a dedicated local workspace for files involved in transfers rather than directly using arbitrary locations as its transfer storage.
+File-transfer handling should remain separate from arbitrary local filesystem access.
 
 ---
 
-# 12. Communication Architecture
+# 18. Task and Result Architecture
 
-Communication is divided into logical layers:
-
-```text
-Application Logic
-      │
-      ▼
-Protocol
-      │
-      ▼
-Transport
-      │
-      ▼
-Network
-      │
-      ▼
-Transport
-      │
-      ▼
-Protocol
-      │
-      ▼
-Application Logic
-```
-
-On the C2 server:
-
-```text
-Core
-  ↓
-Protocol
-  ↓
-Transport
-```
-
-On the agent:
-
-```text
-Core / Beacon / Executor
-          ↓
-       Protocol
-          ↓
-       Transport
-```
-
-This separation prevents the application logic from becoming directly coupled to the network implementation.
-
----
-
-# 13. Main System Flows
-
-## 13.1 Agent Registration and Session Establishment
-
-At a high level:
-
-```text
-Agent
-  │
-  │ connection / registration
-  ▼
-C2 Transport
-  │
-  ▼
-Protocol
-  │
-  ▼
-Validation
-  │
-  ▼
-Agent Manager / Session Manager
-  │
-  ▼
-Persistent State
-```
-
-The exact registration exchange will be defined by the protocol specification.
-
----
-
-## 13.2 Task Execution
-
-The general flow is:
+The principal Task flow is:
 
 ```text
 Operator
@@ -1024,7 +1265,7 @@ Executor
 Command
 ```
 
-The result follows the reverse direction:
+The execution result follows the reverse communication path:
 
 ```text
 Command
@@ -1045,6 +1286,9 @@ C2 Transport
 Protocol
     │
     ▼
+Message Router
+    │
+    ▼
 Result Manager
     │
     ▼
@@ -1054,13 +1298,29 @@ Interface
 Operator
 ```
 
+The Task and Result remain separate domain objects:
+
+```text
+Agent
+   │
+   └── Task
+         │
+         └── Result
+```
+
+A communication interruption does not automatically redefine the Task state.
+
+A Task may therefore remain pending, queued, running, or otherwise recoverable while the Agent temporarily cannot communicate.
+
+Detailed behavior is defined in `task-lifecycle.md`.
+
 ---
 
-## 13.3 File Transfer
+# 19. File Transfer Architecture
 
-File transfers use the protocol and transport layers while keeping file-management and storage responsibilities separate.
+File transfers use the protocol and transport layers while keeping transfer management and physical storage separate.
 
-A conceptual transfer is:
+The logical transfer protocol is:
 
 ```text
 FILE_START
@@ -1074,7 +1334,9 @@ FILE_CHUNK
 FILE_END
 ```
 
-The receiving side can process chunks incrementally:
+Chunks are processed incrementally.
+
+Conceptually:
 
 ```text
 chunk
@@ -1094,15 +1356,11 @@ integrity verification
 final file
 ```
 
-This allows large files to be transferred without requiring the complete file to remain in memory.
+This avoids requiring the complete file to remain in memory.
 
 ---
 
-# 14. File Transfer Architecture
-
-## 14.1 C2 to Agent
-
-Conceptually:
+## 19.1 C2 to Agent
 
 ```text
 C2 File Storage
@@ -1129,9 +1387,9 @@ Integrity Verification
 Agent File Storage
 ```
 
-## 14.2 Agent to C2
+---
 
-Conceptually:
+## 19.2 Agent to C2
 
 ```text
 Agent File Storage
@@ -1161,21 +1419,19 @@ Integrity Verification
 C2 File Storage
 ```
 
-The exact direction associated with `uploads/` and `downloads/` is defined by the transfer operation rather than by the transport layer itself.
+The exact transfer state model is defined in `file-transfer.md`.
 
 ---
 
-# 15. File Confidentiality and Integrity
+# 20. File Confidentiality and Integrity
 
-The architecture distinguishes **encryption in transit** from **encryption at rest**.
+The architecture distinguishes encryption in transit from encryption at rest.
 
-## 15.1 Encryption in Transit
+## 20.1 Encryption in Transit
 
-TCP/TLS is the mandatory communication mechanism for the MVP.
+TCP/TLS is the mandatory MVP transport.
 
 File transfers use the same protected transport.
-
-Conceptually:
 
 ```text
 File
@@ -1196,17 +1452,19 @@ TLS
 File
 ```
 
-## 15.2 Encryption at Rest
+---
+
+## 20.2 Encryption at Rest
 
 Application-level encryption of individual files is not part of the mandatory MVP.
 
-It may be considered later as a defense-in-depth feature, but it introduces additional key-management and testing requirements.
+It may be considered later as a defense-in-depth feature, but would introduce additional key-management and testing requirements.
 
-## 15.3 File Integrity
+---
 
-Transferred files are intended to be verified after reconstruction using a cryptographic hash.
+## 20.3 File Integrity
 
-Conceptually:
+Transferred files are verified after reconstruction using a cryptographic hash.
 
 ```text
 Original File
@@ -1227,13 +1485,15 @@ Reconstructed File
  Compare
 ```
 
-A matching hash indicates that the reconstructed file corresponds to the expected transferred content.
+A successful comparison provides integrity evidence for the reconstructed content.
+
+Detailed transfer integrity behavior is defined in `file-transfer.md`.
 
 ---
 
-# 16. Component Boundaries
+# 21. Component Dependency Boundaries
 
-The primary server-side dependency direction is:
+The primary dependency direction is:
 
 ```text
 Interface
@@ -1247,7 +1507,7 @@ Transport
 Network
 ```
 
-Persistence is abstracted:
+Persistence is accessed through abstractions:
 
 ```text
 Core
@@ -1260,7 +1520,7 @@ Core
        Filesystem
 ```
 
-The agent follows a similar communication boundary:
+The Agent follows a similar communication boundary:
 
 ```text
 Agent Core / Beacon / Executor
@@ -1270,7 +1530,7 @@ Agent Core / Beacon / Executor
            Transport
 ```
 
-while execution remains separated:
+Execution remains separated:
 
 ```text
 Agent
@@ -1281,11 +1541,11 @@ Agent
  └── Platform
 ```
 
-These boundaries are intended to reduce coupling and keep individual components easier to understand, test, and replace.
+These boundaries are intended to reduce coupling and make components easier to test and replace.
 
 ---
 
-# 17. Security Boundaries
+# 22. Security Boundaries
 
 The architecture contains several security-sensitive boundaries:
 
@@ -1307,7 +1567,7 @@ Protected Transport
 Agent
         │
         ▼
-Command / Execution Boundary
+Executor / Command Boundary
         │
         ▼
 Local File Handling
@@ -1317,41 +1577,46 @@ Important principles include:
 
 - messages must be validated before being processed by application logic;
 - transport protection does not replace protocol validation;
-- data received from an agent should not automatically be considered trusted;
-- commands should pass through the agent's command and execution layers;
-- file transfers should remain within the defined file-management and storage boundaries.
+- data received from an Agent should not automatically be considered trusted;
+- Tasks should pass through the Agent's Executor and command layers;
+- file transfers should remain within the defined file-management and storage boundaries;
+- security-sensitive actions should remain observable through logging and event records.
 
-Detailed security controls and mitigations are documented in [`SECURITY.md`](SECURITY.md).
+Detailed security controls and mitigations are documented separately.
 
 ---
 
-# 18. Extensibility
+# 23. Extensibility
 
 The architecture deliberately provides several extension points.
 
-## 18.1 Operator Interfaces
+## 23.1 Operator Interfaces
 
 ```text
 Interface
- ├── CLI
- ├── TUI
- └── Web
+ ├── CLI       ← MVP
+ ├── TUI       ← extension
+ └── Web       ← extension
 ```
 
-Additional interfaces can reuse the same C2 core.
+All interfaces reuse the same C2 Core.
 
-## 18.2 Transport
+---
+
+## 23.2 Transport
 
 ```text
 Transport Interface
- ├── TCP/TLS
- ├── HTTP       ← extension
- └── DNS        ← extension
+ ├── TCP/TLS    ← MVP
+ ├── HTTP       ← possible extension
+ └── DNS        ← possible extension
 ```
 
-Additional transports should not require redesigning the task and agent-management logic.
+Additional transports should not require redesigning the Task, Agent, or Result management logic.
 
-## 18.3 Database
+---
+
+## 23.3 Database
 
 ```text
 Database Interface
@@ -1359,9 +1624,11 @@ Database Interface
         └── SQLite
 ```
 
-A different database backend could be introduced without changing the core business logic throughout the application.
+A different database backend can therefore be introduced without redesigning the Core domain logic.
 
-## 18.4 File Storage
+---
+
+## 23.4 File Storage
 
 ```text
 File Storage Interface
@@ -1369,21 +1636,23 @@ File Storage Interface
         └── Filesystem
 ```
 
-The storage implementation can therefore evolve independently from file-transfer logic.
-
-## 18.5 Agent Platform
-
-```text
-Platform Interface
-       ├── Linux
-       └── Windows ← extension
-```
-
-The command layer can also evolve while keeping the executor independent from individual command implementations.
+The physical storage implementation can evolve independently from the logical file-transfer lifecycle.
 
 ---
 
-# 19. Repository Mapping
+## 23.5 Agent Platform
+
+```text
+Platform Interface
+       ├── Linux       ← primary
+       └── Windows     ← extension
+```
+
+The Executor and command architecture should allow platform-specific implementations without duplicating the complete Agent architecture.
+
+---
+
+# 24. Repository Mapping
 
 The architecture maps to the implementation as follows.
 
@@ -1394,11 +1663,16 @@ The architecture maps to the implementation as follows.
 | Entry point | `c2_server/main.py` |
 | Operator interface | `c2_server/interface/` |
 | C2 core | `c2_server/core/` |
+| Agent management | `c2_server/core/agent_manager.py` |
+| Session management | `c2_server/core/session_manager.py` |
+| Task management | `c2_server/core/task_manager.py` |
+| Result management | `c2_server/core/result_manager.py` |
+| File management | `c2_server/core/file_manager.py` |
+| Message routing | `c2_server/core/message_router.py` |
+| Synchronization | `c2_server/core/synchronization_manager.py` |
 | Protocol | `c2_server/protocol/` |
 | Transport | `c2_server/transport/` |
-| Database storage | `c2_server/storage/database/` |
-| File storage | `c2_server/storage/files/` |
-| File data | `c2_server/data/files/` |
+| Database storage | `c2_server/storage/` |
 | Logging | `c2_server/logging/` |
 | Configuration | `c2_server/config/` |
 | Tests | `c2_server/tests/` |
@@ -1420,34 +1694,170 @@ The architecture maps to the implementation as follows.
 
 ---
 
-# 20. Current Architectural Status
+# 25. Relationship with Other Documentation
+
+`ARCHITECTURE.md` provides the global architectural view.
+
+It should not duplicate detailed normative definitions maintained elsewhere.
+
+| Concern | Authoritative Document |
+|---|---|
+| Authorized-use scope | `ARCHITECTURE.md` |
+| Global architecture | `ARCHITECTURE.md` |
+| Data entities and relationships | `data-model.md` |
+| Logical state machines | `state-machines.md` |
+| Protocol message contract | `protocol.md` |
+| Protocol/state interactions | `protocol-state-transition.md` |
+| Reconnection and reconciliation | `reconnection-and-synchronization.md` |
+| Task lifecycle | `task-lifecycle.md` |
+| Network architecture | `network-architecture.md` |
+| File transfer lifecycle | `file-transfer.md` |
+| Architectural decisions | `DECISIONS.md` |
+| Testing approach | `testing-strategy.md` |
+| Security controls and mitigations | `countermeasures.md` / security documentation |
+
+When a detailed document defines a domain-specific rule, this document should reference that rule rather than reproduce it.
+
+---
+
+# 26. Architectural Invariants
+
+The following principles must remain true across implementations.
+
+### Authorized Use
+
+```text
+Project
+   │
+   ▼
+Authorized laboratory / academic environment
+   │
+   ├── Controlled systems
+   ├── Explicitly authorized testing
+   └── Academic demonstrations
+```
+
+The architecture does not authorize deployment or testing against systems outside the controlled scope.
+
+---
+
+### Agent and Session
+
+```text
+One Agent identity
+        ↓
+Many Sessions over time
+```
+
+A new connection creates a new Session.
+
+---
+
+### Session and Communication
+
+```text
+Transport established
+        ↓
+Session CONNECTED
+        ↓
+REGISTER
+        ↓
+Communication SYNCHRONIZING
+        ↓
+Synchronization complete
+        ↓
+Communication CONNECTED
+```
+
+Session state and Agent communication state are separate concepts.
+
+---
+
+### Task and Session
+
+```text
+Task
+ │
+ ├── created in one Session
+ ├── may execute during another Session
+ └── may be reconciled after reconnection
+```
+
+A Task is associated with an Agent, not permanently with one Session.
+
+---
+
+### Protocol and Transport
+
+```text
+Protocol ≠ Transport
+```
+
+The logical message contract should remain independent from the transport implementation.
+
+---
+
+### File Transfer and Storage
+
+```text
+Transfer Lifecycle ≠ Physical Storage
+```
+
+The File Manager manages the logical transfer while the storage layer manages the physical data.
+
+---
+
+### Interface and Core
+
+```text
+Operator Interface ≠ C2 Business Logic
+```
+
+CLI, TUI, and Web interfaces must use the same Core.
+
+---
+
+# 27. Current Architectural Status
 
 This document represents the current architectural baseline of the project.
 
-The following areas are established at the architectural level:
+The following areas are established:
 
-- C2 server / agent separation;
-- multi-agent server model;
-- modular separation of interface, core, protocol, transport, and storage;
-- asynchronous task/result model;
-- agent/session distinction;
-- protocol/transport separation;
-- beacon/transport separation;
-- controlled file storage on both sides;
-- file-management / file-storage separation;
-- TLS for protected communication;
+- authorized academic/laboratory use as the project scope;
+- C2 server / Agent separation;
+- modular-monolithic C2 architecture;
+- multi-Agent operation;
+- Agent / Session distinction;
+- interface / Core / protocol / transport separation;
+- protocol / transport separation;
+- beacon / transport separation;
+- asynchronous Task and Result model;
+- explicit message routing;
+- synchronization as a dedicated architectural responsibility;
+- database / file-storage separation;
+- controlled file workspaces;
+- TCP/TLS as the MVP transport;
 - file integrity verification;
-- Linux as the primary agent platform;
+- Linux as the primary Agent platform;
 - extensibility for additional interfaces, transports, storage backends, and Windows support.
 
-The following areas still require detailed design before or during implementation:
+The following areas remain implementation-level concerns or require further detailed specification:
 
-- exact C2/agent interfaces;
-- exact protocol message schema;
-- exact session lifecycle;
+- exact class and function interfaces;
 - exact database schema;
-- detailed asynchronous implementation;
-- exact command contracts;
-- detailed error-handling behaviour.
+- concrete asynchronous/concurrency implementation;
+- exact command implementations;
+- detailed error-handling behavior;
+- final implementation of optional interfaces and extensions.
 
-Major changes to component responsibilities, dependencies, or system interactions should be recorded in [`DECISIONS.md`](DECISIONS.md) and reflected in this document.
+The following areas are no longer considered undefined at the architectural level because they are specified by the corresponding documents:
+
+- Session lifecycle;
+- Agent communication states;
+- Task lifecycle;
+- protocol message categories;
+- registration and synchronization flow;
+- Agent/Session/Task/Result relationships;
+- network-layer responsibilities.
+
+Major changes to component responsibilities, dependencies, or system interactions should be recorded in `DECISIONS.md` and reflected in this document.
