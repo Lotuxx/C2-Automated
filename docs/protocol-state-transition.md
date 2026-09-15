@@ -10,10 +10,13 @@
 > transitions.  
 > This document connects the two by specifying which protocol events may cause
 > or confirm those transitions.
+>
+> **This document is authoritative for the relationship between protocol
+> messages and logical state transitions, but does not define new states.**
 
 ---
 
-## 1. Purpose
+# 1. Purpose
 
 A protocol message and a state transition are not equivalent.
 
@@ -35,9 +38,7 @@ RUNNING     → COMPLETED
 CONNECTED   → DISCONNECTED
 ```
 
-This document defines the relationship between the two.
-
-The general flow is:
+The general processing model is:
 
 ```text
 Protocol Message
@@ -53,54 +54,49 @@ State Transition
 Persisted Domain State
 ```
 
-A received message must therefore be interpreted according to its semantic
+A received message MUST therefore be interpreted according to its semantic
 meaning rather than automatically mapped to a state change.
 
 ---
 
-## 2. Authorities and Responsibilities
-
-The project uses the following documentation boundaries:
+# 2. Authorities and Responsibilities
 
 | Document | Authority |
 |---|---|
 | `protocol.md` | Message vocabulary and message semantics |
-| `state-machines.md` | States and valid state transitions |
-| `protocol-state-transition.md` | Relationship between protocol messages and state transitions |
+| `state-machines.md` | States and valid logical state transitions |
+| `protocol-state-machines.md` | Relationship between protocol messages and state transitions |
 | `reconnection-and-synchronization.md` | Reconnection and synchronization procedures |
 | `task-lifecycle.md` | Detailed Task execution and recovery behavior |
 | `file-transfer.md` | File-transfer lifecycle and transfer behavior |
 | `data-model.md` | Entities, relationships, and persistence model |
 
-This document must not redefine states already established by
-`state-machines.md`.
+This document MUST NOT redefine states established by `state-machines.md`.
 
 ---
 
-## 3. Transition Conventions
+# 3. Transition Conventions
 
-The notation used throughout this document is:
+### Causes
 
-```text
-Message
-    ↓
-Condition
-    ↓
-State transition
-```
+The message can directly cause the transition when its preconditions are
+satisfied.
 
-The following terms are used:
+### Confirms
 
-- **Causes** — the message can directly cause the transition when its
-  preconditions are satisfied.
-- **Confirms** — the message provides evidence that a transition has occurred.
-- **Triggers handling** — the message initiates processing, but the resulting
-  state depends on additional domain logic.
-- **No transition** — receiving the message does not itself change the
-  referenced state.
+The message provides evidence that a state has been reached or that a
+condition exists.
 
-A message MUST NOT cause a state transition that is not permitted by
-`state-machines.md`.
+### Triggers handling
+
+The message initiates processing, but the resulting state depends on
+additional domain logic.
+
+### No transition
+
+Receiving the message does not itself change the referenced state.
+
+A message MUST NOT cause a transition prohibited by `state-machines.md`.
 
 ---
 
@@ -111,7 +107,7 @@ The Session state machine is:
 ```text
 CONNECTING
     │
-    │ successful connection / registration
+    │ transport connection established
     ▼
 CONNECTED
     │
@@ -120,122 +116,186 @@ CONNECTED
     └── orderly termination ───→ CLOSED
 ```
 
-`DISCONNECTED` and `CLOSED` are terminal states for a Session.
+The Session lifecycle concerns the **underlying connection episode**.
 
-### 4.1 Session Message Mapping
+It is therefore distinct from Agent registration and synchronization.
 
-| Message / Event | Condition | Session effect |
-|---|---|---|
-| `REGISTER` | New connection accepted | Creates a new Session in `CONNECTING`/establishment phase |
-| `REGISTER_ACK` | Registration accepted | Confirms new Session as `CONNECTED` after establishment processing |
-| `BEACON` | Valid message received | Confirms active communication |
-| `BEACON_ACK` | Valid acknowledgement sent/received | Confirms successful communication |
-| `PING` | Sent over active Session | No direct state change |
-| `PONG` | Valid response received | Confirms communication reachability |
-| Connection loss | Active connection disappears | `CONNECTED → DISCONNECTED` |
-| Orderly termination | Explicit Session closure | `CONNECTED → CLOSED` |
+A Session may be:
 
-The exact connection-establishment sequencing is defined in
-`reconnection-and-synchronization.md`.
+```text
+Session = CONNECTED
+Agent communication = SYNCHRONIZING
+```
 
-### 4.2 New Session Rule
+This is a valid state combination.
+
+---
+
+## 4.1 Session Message Mapping
+
+| Message / Event | Role | Condition | Session effect |
+|---|---|---|---|
+| New connection | Causes | C2 accepts a new connection episode | Creates new Session in `CONNECTING` |
+| Transport establishment | Causes | TCP/TLS or equivalent transport successfully established | `CONNECTING → CONNECTED` |
+| `REGISTER` | Triggers handling | Received over the connected Session | Does not change Session state |
+| `REGISTER_ACK` | Confirms | Registration accepted | Confirms registration over the already `CONNECTED` Session |
+| `BEACON` | Confirms | Valid message received | Confirms active communication |
+| `BEACON_ACK` | Confirms | Valid acknowledgement exchanged | Confirms successful communication |
+| `PING` | Triggers handling | Sent over active communication | No direct Session transition |
+| `PONG` | Confirms | Valid response received | Confirms communication reachability |
+| Connection loss | Causes | Active connection disappears | `CONNECTED → DISCONNECTED` |
+| Orderly termination | Causes | Session explicitly terminated | `CONNECTED → CLOSED` |
+
+`REGISTER` MUST NOT be treated as the event that changes:
+
+```text
+CONNECTING → CONNECTED
+```
+
+That transition belongs to the underlying connection establishment.
+
+---
+
+## 4.2 New Session Rule
 
 A new connection always creates a new Session.
 
-For example:
+The correct conceptual sequence is:
 
 ```text
-S042 = DISCONNECTED
-
 New connection
+      ↓
+New Session
+      ↓
+CONNECTING
+      ↓
+transport established
+      ↓
+CONNECTED
       ↓
 REGISTER
       ↓
-New Session S043
-      ↓
-REGISTER_ACK
-      ↓
-S043 = CONNECTED
+Agent communication = SYNCHRONIZING
 ```
 
-The protocol MUST NOT interpret `previous_session_id` as a request to reopen
-`S042`.
+The `REGISTER` message identifies the Agent and begins the registration and
+synchronization process.
+
+It does not reopen an old Session.
+
+`previous_session_id`, when present, is historical context only.
 
 ---
 
 # 5. Agent Health Transitions
 
-The Agent health state machine is:
+The Agent health states are:
 
 ```text
 UNKNOWN
-   │
-   │ valid registration / communication
-   ▼
 ALIVE
-   │
-   │ liveness threshold exceeded
-   ▼
 LIKELY_UNREACHABLE
-   │
-   ├── valid communication ──→ ALIVE
-   │
-   └── confirmed termination → TERMINATED
+TERMINATED
 ```
 
-### 5.1 Message Mapping
+## 5.1 Message Mapping
 
-| Message / Event | Condition | Agent health effect |
+| Message / Event | Role | Agent health effect |
 |---|---|---|
-| `REGISTER` | Valid registration received | `UNKNOWN → ALIVE` |
-| `BEACON` | Valid periodic communication | Confirms/maintains `ALIVE` |
-| `PONG` | Valid response to liveness check | Confirms current reachability |
-| `TASK_ACK` | Valid Agent response | Confirms communication but does not independently determine health |
-| `RESULT` | Valid Result received | Confirms communication |
-| Liveness threshold | Expected communication repeatedly absent | `ALIVE → LIKELY_UNREACHABLE` |
-| Valid communication while suspected unreachable | Any valid Agent message | `LIKELY_UNREACHABLE → ALIVE` |
-| Confirmed termination | Reliable termination evidence | `→ TERMINATED` |
+| `REGISTER` | Causes/confirms | `UNKNOWN → ALIVE` when valid |
+| `BEACON` | Confirms | Confirms current communication |
+| `PONG` | Confirms | Confirms current reachability |
+| `TASK_ACK` | Confirms | Provides communication evidence |
+| `RESULT` | Confirms | Provides communication evidence |
+| `TASK_STATUS` | Confirms | Provides communication evidence |
+| Liveness threshold | Causes | `ALIVE → LIKELY_UNREACHABLE` |
+| Valid communication while unreachable | Causes | `LIKELY_UNREACHABLE → ALIVE` |
+| Confirmed termination | Causes | `ALIVE/LIKELY_UNREACHABLE → TERMINATED` |
 
-Communication loss alone MUST NOT transition an Agent directly to
-`TERMINATED`.
+Communication loss alone MUST NOT cause `TERMINATED`.
 
 ---
 
 # 6. Agent Activity Transitions
 
-The Agent activity state machine is:
+The Agent activity states are:
 
 ```text
 IDLE
-  │
-  │ Task starts
-  ▼
 BUSY
-  │
-  │ no active work
-  ▼
-IDLE
 ```
 
-Protocol messages generally provide evidence about activity rather than
-directly controlling it.
+`RUNNING` remains a Task state.
 
 | Message / Event | Effect |
 |---|---|
-| `TASK` accepted and execution started | May cause `IDLE → BUSY` |
-| `TASK_ACK` | Confirms Task acceptance; does not necessarily imply `BUSY` |
-| `TASK_STATUS` with `RUNNING` | Provides evidence of `BUSY` |
-| `RESULT` completing the active Task | May cause `BUSY → IDLE` if no other active Task remains |
-| `BEACON` | Reports current activity state |
-| Queued Task only | Does not necessarily cause `IDLE → BUSY` |
-
-`RUNNING` remains a Task state, not an Agent activity state.
+| Task accepted and execution starts | May cause `IDLE → BUSY` |
+| `TASK_ACK` | Confirms acceptance; does not necessarily imply `BUSY` |
+| `TASK_STATUS = RUNNING` | Provides evidence of `BUSY` |
+| `RESULT` completing active work | May cause `BUSY → IDLE` if no active Task remains |
+| `BEACON` | Reports activity |
+| Queued Task only | No direct activity transition |
 
 ---
 
-# 7. Task Transitions
+# 7. Agent Communication Transitions
 
-The Task state machine is:
+The Agent communication states are:
+
+```text
+CONNECTING
+SYNCHRONIZING
+CONNECTED
+DEGRADED
+OFFLINE_WAIT
+```
+
+The relevant mapping is:
+
+| Event / Message | Effect |
+|---|---|
+| Connection attempt begins | `CONNECTING` |
+| Transport established | `CONNECTING → SYNCHRONIZING` |
+| `REGISTER` | Registration processing during `SYNCHRONIZING` |
+| `REGISTER_ACK` | Confirms registration |
+| `SYNC_STATE` | Synchronization processing |
+| `SYNC_STATE_RESPONSE` | Reconciliation processing |
+| `SYNC_COMPLETE` | `SYNCHRONIZING → CONNECTED` |
+| Communication degradation | `CONNECTED → DEGRADED` |
+| Recovery | `DEGRADED → CONNECTED` |
+| Recovery exhausted | `DEGRADED → OFFLINE_WAIT` |
+| Reconnection attempt | `OFFLINE_WAIT → CONNECTING` |
+
+The important distinction is:
+
+```text
+Session CONNECTED
+        ≠
+Agent communication CONNECTED
+```
+
+A Session becomes `CONNECTED` when the underlying transport is established.
+
+Agent communication becomes `CONNECTED` only after synchronization completes.
+
+---
+
+# 8. Task Transitions
+
+The authoritative Task states are:
+
+```text
+PENDING
+WAITING_ACK
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+TIMEOUT
+CANCELLED
+```
+
+## 8.1 `TASK`
 
 ```text
 PENDING
@@ -243,52 +303,19 @@ PENDING
    │ TASK dispatched
    ▼
 WAITING_ACK
-   │
-   │ TASK_ACK
-   ▼
-QUEUED
-   │
-   │ execution starts
-   ▼
-RUNNING
-   ├──────────────→ COMPLETED
-   ├──────────────→ FAILED
-   └──────────────→ TIMEOUT
-
-QUEUED
-   │
-   │ cancellation
-   ▼
-CANCELLED
 ```
 
-The exact lifecycle is defined in `task-lifecycle.md`.
-
-## 7.1 `TASK`
-
-A `TASK` message is associated with a C2 Task.
-
-Normal processing:
+`TASK` MUST NOT directly cause:
 
 ```text
-Task = PENDING
-      ↓
-TASK sent
-      ↓
-Task = WAITING_ACK
+PENDING → RUNNING
 ```
 
-The message itself does not imply execution.
+Transmission does not prove execution.
 
-The C2 MUST NOT mark the Task as `RUNNING` merely because `TASK` was
-transmitted.
+---
 
-## 7.2 `TASK_ACK`
-
-A valid `TASK_ACK` provides confirmation that the Agent received and accepted
-the Task.
-
-Normal transition:
+## 8.2 `TASK_ACK`
 
 ```text
 WAITING_ACK
@@ -298,381 +325,278 @@ WAITING_ACK
 QUEUED
 ```
 
-Depending on implementation scheduling, the Agent may begin execution
-immediately after acceptance. The resulting state is then determined by the
-Task lifecycle rather than by the acknowledgement message alone.
+`TASK_ACK` means acceptance, not execution or completion.
 
-A duplicate `TASK_ACK` MUST NOT create a new logical Task or repeat the Task
-transition.
+---
 
-## 7.3 `TASK_STATUS`
+## 8.3 `TASK_STATUS`
 
-`TASK_STATUS` provides evidence of the Agent's current Task state.
+`TASK_STATUS` provides execution-state evidence.
 
-Possible mappings include:
-
-| Reported status | C2 interpretation |
-|---|---|
-| `QUEUED` | Confirms/updates Task knowledge to `QUEUED` when consistent |
-| `RUNNING` | Confirms/updates Task knowledge to `RUNNING` |
-| `COMPLETED` | Confirms Task completion |
-| `FAILED` | Confirms Task failure |
-| `UNKNOWN` | Agent has no known state for the referenced Task |
-
-A `TASK_STATUS` message does not automatically justify every possible
-transition.
-
-For example:
+Possible reports include:
 
 ```text
-COMPLETED
-   ↓
-TASK_STATUS = RUNNING
-```
-
-must not normally reopen the completed Task without explicit conflict
-resolution.
-
-## 7.4 `RESULT`
-
-A valid `RESULT` provides execution evidence for a Task.
-
-For a successful result:
-
-```text
+QUEUED
 RUNNING
-   │
-   │ RESULT
-   ▼
 COMPLETED
-```
-
-For an execution error:
-
-```text
-RUNNING
-   │
-   │ RESULT / failure information
-   ▼
 FAILED
+UNKNOWN
 ```
 
-The exact Result status semantics remain subject to the final
-implementation.
+`UNKNOWN` is a recovery/reporting condition and is not a persistent Task
+state.
 
-A Result MUST be correlated with its `task_id` when one is supplied.
+A reported state MUST be reconciled with existing C2 state before applying a
+transition.
 
-A Result for an unknown Task MUST NOT create a new Task implicitly.
+---
 
-## 7.5 Task Communication Failure
+## 8.4 `RESULT`
 
-Communication events do not directly imply Task failure.
+A successful Result may provide evidence for:
+
+```text
+RUNNING → COMPLETED
+```
+
+An execution failure may provide evidence for:
+
+```text
+RUNNING → FAILED
+```
+
+A Result for an unknown Task MUST NOT implicitly create a Task.
+
+---
+
+## 8.5 Timeout
+
+An acknowledgement deadline does not directly mean:
+
+```text
+WAITING_ACK → TIMEOUT
+```
+
+Instead:
+
+```text
+ACK deadline exceeded
+        ↓
+recovery
+        ↓
+state established?
+        ↓
+final timeout only if policy requires it
+```
+
+---
+
+## 8.6 Cancellation
+
+An explicit cancellation accepted by the Agent may produce:
+
+```text
+Applicable state → CANCELLED
+```
+
+Sending a cancellation request does not itself prove that a running Task has
+stopped.
+
+---
+
+## 8.7 Communication Failure
+
+Communication loss does not directly alter Task execution state.
 
 For example:
 
 ```text
-RUNNING
-   │
-   │ connection lost
-   ▼
-RUNNING
+RUNNING + connection loss → RUNNING
 ```
 
-The Task may continue executing locally.
-
-Likewise:
-
-```text
-QUEUED
-   │
-   │ connection lost
-   ▼
-QUEUED
-```
-
-A queued Task does not become `FAILED` merely because communication was lost.
+remains valid.
 
 ---
 
-# 8. Result Transitions
+# 9. Result Transitions
 
-The Result model distinguishes execution from delivery.
+No independent authoritative Result state machine is defined here.
 
-Conceptually:
-
-```text
-Task execution
-      ↓
-Result produced
-      ↓
-Result retained by Agent
-      ↓
-Result transmitted
-      ↓
-Result received by C2
-```
-
-A Result may therefore exist before the C2 receives its corresponding
-protocol message.
-
-### 8.1 `RESULT`
-
-A received `RESULT` provides evidence that:
+The essential distinction is:
 
 ```text
-Task → execution outcome
+Task execution state
+        ≠
+Result delivery state
 ```
 
-and allows the C2 to associate the Result with its Task.
+A Result may be retained on the Agent before being transmitted.
 
-The Result's exact persistence/verification states remain implementation
-dependent.
-
-### 8.2 Lost Result
-
-A lost Result message does not imply:
-
-```text
-Task → FAILED
-```
-
-The Agent may retain the Result and transmit it during a later synchronization
-or recovery process.
-
-Detailed Result recovery is defined in
-`reconnection-and-synchronization.md` and `task-lifecycle.md`.
+A missing Result MUST NOT automatically cause Task failure.
 
 ---
 
-# 9. Liveness Message Transitions
+# 10. Liveness Message Transitions
 
-Liveness messages affect communication knowledge rather than Task execution.
+## `BEACON`
 
-## 9.1 `BEACON`
+A valid Beacon confirms current communication and updates liveness
+information.
 
-```text
-Agent
-  │
-  │ BEACON
-  ▼
-C2
-```
+It does not directly change Task state.
 
-A valid Beacon:
+## `BEACON_ACK`
 
-- confirms that the Agent can currently communicate;
-- updates liveness-related information;
-- may report lightweight Agent/Task information.
+Confirms successful processing of the Beacon.
 
-It does not directly change a Task state.
+It is not a Task acknowledgement.
 
-## 9.2 `BEACON_ACK`
+## `PING` / `PONG`
 
-```text
-BEACON
-   ↓
-BEACON_ACK
-```
+A valid `PONG` confirms communication reachability.
 
-The acknowledgement confirms successful handling of the Beacon.
-
-It does not represent Task acknowledgement.
-
-## 9.3 `PING` / `PONG`
-
-```text
-PING
-  ↓
-PONG
-```
-
-A valid `PONG`:
-
-- confirms current communication reachability;
-- may restore an Agent from `LIKELY_UNREACHABLE` to `ALIVE`;
-- may confirm that a Session is still communicating.
-
-It does not:
-
-- complete a Task;
-- acknowledge a Task;
-- prove a Result was delivered.
+It does not prove Task completion or Result delivery.
 
 ---
 
-# 10. Synchronization Message Transitions
+# 11. Synchronization Message Transitions
 
-Synchronization messages are associated with the Agent's communication state.
+Synchronization occurs after the Session has already become `CONNECTED`.
 
-The high-level sequence is:
+The Agent communication state progresses through:
 
 ```text
-New Session
-     ↓
-REGISTER
-     ↓
-REGISTER_ACK
-     ↓
+CONNECTING
+      │
+      │ transport established
+      ▼
 SYNCHRONIZING
-     ↓
+      │
+      │ REGISTER / synchronization
+      ▼
+CONNECTED
+```
+
+The Session state during this process is already:
+
+```text
+CONNECTED
+```
+
+The relevant protocol messages are:
+
+```text
+REGISTER
+REGISTER_ACK
 SYNC_STATE
-     ↓
 SYNC_STATE_RESPONSE
-     ↓
 SYNC_COMPLETE
-     ↓
-CONNECTED / normal operation
 ```
 
-The exact reconciliation algorithm is intentionally not defined here.
+## 11.1 `REGISTER`
 
-### 10.1 `SYNC_STATE`
+`REGISTER` identifies the Agent over the newly established Session.
 
-`SYNC_STATE` provides retained Agent state to the C2.
+It does not create or reopen the Session.
 
-It does not itself change a Task state merely because a Task identifier is
-present.
+## 11.2 `REGISTER_ACK`
 
-Instead, it provides evidence that the Synchronization Manager uses to
-reconcile the C2's state.
+`REGISTER_ACK` confirms registration and provides the new Session identity.
 
-### 10.2 `SYNC_STATE_RESPONSE`
+It does not transition the Session from `CONNECTING` to `CONNECTED`; that has
+already occurred at transport establishment.
 
-`SYNC_STATE_RESPONSE` communicates the C2's reconciliation decisions and
-required updates.
+It supports the Agent communication transition into synchronization.
 
-Potential consequences include:
+## 11.3 `SYNC_STATE`
 
-- updating stale Task information;
-- requesting retained Results;
-- dispatching Tasks that are still pending;
-- handling cancellation information.
+Provides retained Agent state as synchronization evidence.
 
-Each consequence must be processed according to the authoritative state
-machine.
+It does not itself change Task state.
 
-### 10.3 `SYNC_COMPLETE`
+## 11.4 `SYNC_STATE_RESPONSE`
 
-`SYNC_COMPLETE` marks the end of the synchronization phase.
+Communicates C2 reconciliation decisions and required updates.
 
-It permits the Agent to leave the synchronization phase and resume normal
-communication/Task processing.
+All resulting Task transitions remain subject to `state-machines.md`.
 
-Detailed synchronization behavior belongs to
-`reconnection-and-synchronization.md`.
+## 11.5 `SYNC_COMPLETE`
+
+Marks completion of synchronization:
+
+```text
+SYNCHRONIZING → CONNECTED
+```
+
+Normal Agent communication may then resume.
 
 ---
 
-# 11. File Transfer Transitions
+# 12. File Transfer Transitions
 
-File transfers use:
-
-```text
-FILE_START
-FILE_CHUNK
-FILE_END
-```
-
-The transfer state machine is:
+The authoritative File Transfer states are:
 
 ```text
 PENDING
-   │
-   │ FILE_START
-   ▼
 TRANSFERRING
-   │
-   │ FILE_END + validation
-   ▼
 COMPLETED
-
-TRANSFERRING ──failure──→ FAILED
-TRANSFERRING ──cancel────→ CANCELLED
-```
-
-### 11.1 `FILE_START`
-
-Initiates a logical transfer.
-
-Normal transition:
-
-```text
-PENDING
-   ↓
-FILE_START
-   ↓
-TRANSFERRING
-```
-
-### 11.2 `FILE_CHUNK`
-
-Transfers part of the file.
-
-A valid `FILE_CHUNK` normally leaves the transfer in:
-
-```text
-TRANSFERRING
-```
-
-A chunk alone does not indicate completion.
-
-### 11.3 `FILE_END`
-
-Marks the end of the transmitted file data.
-
-The transfer may transition to `COMPLETED` only after required integrity and
-completeness checks succeed.
-
-Otherwise:
-
-```text
-TRANSFERRING
-      ↓
 FAILED
+CANCELLED
 ```
 
-Detailed transfer semantics are defined in `file-transfer.md`.
+## 12.1 `FILE_START`
+
+```text
+PENDING → TRANSFERRING
+```
+
+## 12.2 `FILE_CHUNK`
+
+A valid chunk keeps the transfer in:
+
+```text
+TRANSFERRING
+```
+
+## 12.3 `FILE_END`
+
+After completeness and integrity validation:
+
+```text
+TRANSFERRING → COMPLETED
+```
+
+Failure or cancellation may produce the corresponding terminal state.
 
 ---
 
-# 12. Error Message Transitions
+# 13. Error Message Transitions
 
-An `ERROR` message reports an error but does not have one universal state
-transition.
+`ERROR` has no universal state transition.
 
-Its effect depends on what the error concerns.
-
-Examples:
+Its effect depends on context:
 
 ```text
 Protocol error
-    → reject message
-    → no domain state transition
+    → message rejection
 
-Task execution error
+Task error
     → Task may become FAILED
 
 Transfer error
     → Transfer may become FAILED
 
 Communication error
-    → may contribute to Session/liveness state changes
+    → may contribute to communication/session recovery
 ```
-
-Therefore:
-
-> `ERROR` is evidence requiring domain-specific handling, not a universal
-> state transition.
 
 ---
 
-# 13. Cross-Message Correlation Rules
+# 14. Cross-Message Correlation Rules
 
-Protocol messages must be correlated with the correct domain entity.
+## Task
 
-### 13.1 Task Correlation
-
-Messages concerning a Task use `task_id`:
+Use `task_id` to correlate:
 
 ```text
 TASK
@@ -682,26 +606,21 @@ TASK_STATUS
 RESULT
 ```
 
-A message referencing an unknown Task must not silently create one unless an
-explicit protocol rule later permits this.
+## Result
 
-### 13.2 Result Correlation
+Use `result_id` and the associated `task_id`.
 
-`RESULT` uses `result_id` as the logical Result identifier and normally
-references the originating `task_id`.
+Duplicate `result_id` values MUST NOT create duplicate Results.
 
-Duplicate `result_id` values must not create duplicate logical Results.
+## Session
 
-### 13.3 Session Correlation
+Use `session_id` to identify the communication episode.
 
-Session-bound messages use `session_id` to identify the communication episode.
+An old Session MUST NOT be reactivated by receiving a message.
 
-A message associated with an old Session must not silently reactivate that
-Session.
+## File Transfer
 
-### 13.4 File Transfer Correlation
-
-File messages use `transfer_id`:
+Use `transfer_id` across:
 
 ```text
 FILE_START
@@ -709,91 +628,49 @@ FILE_CHUNK
 FILE_END
 ```
 
-All chunks belonging to one transfer must reference the same logical
-`transfer_id`.
-
 ---
 
-# 14. Duplicate and Replay Protection
+# 15. Duplicate and Replay Protection
 
-The protocol distinguishes three levels of identity:
+The protocol distinguishes:
 
 ```text
 message_id
-    → individual communication message
-
 task_id
-    → logical unit of work
-
 result_id
-    → logical execution result
+transfer_id
+session_id
 ```
 
-Consequently:
-
-```text
-duplicate message
-        ≠
-duplicate Task
-        ≠
-duplicate Result
-```
-
-Implementations MUST ensure that duplicate protocol delivery does not cause
-an invalid domain transition.
-
-Examples:
-
-```text
-TASK M100
-TASK M100
-```
-
-must not cause the same logical Task to be executed twice merely because the
-message was delivered twice.
-
-Similarly:
-
-```text
-RESULT R001
-RESULT R001
-```
-
-must not create two logical Results.
+Duplicate protocol delivery MUST NOT create duplicate logical entities or
+invalid state transitions.
 
 ---
 
-# 15. Invalid Protocol-to-State Transitions
-
-The following mappings are explicitly invalid:
+# 16. Invalid Protocol-to-State Transitions
 
 | Situation | Invalid transition |
 |---|---|
-| Old Session receives communication after being replaced | `DISCONNECTED → CONNECTED` |
-| Connection loss | `RUNNING → FAILED` solely from communication loss |
-| Connection loss | `Agent ALIVE → TERMINATED` solely from communication loss |
-| `TASK` transmitted | `PENDING → RUNNING` without acceptance/execution |
+| Transport established | Session `CONNECTING → CONNECTED` is valid; `REGISTER` is not required for this transition |
+| `REGISTER` received | Session `CONNECTING → CONNECTED` solely because of `REGISTER` |
+| Old Session receives communication | `DISCONNECTED → CONNECTED` |
+| Old Session receives communication | `CLOSED → CONNECTED` |
+| Connection loss | Task `RUNNING → FAILED` solely from communication loss |
+| Connection loss | Agent `ALIVE → TERMINATED` solely from communication loss |
+| `TASK` transmitted | `PENDING → RUNNING` |
 | `TASK_ACK` received | `WAITING_ACK → COMPLETED` |
-| `PONG` received | `Task → COMPLETED` |
-| Missing `RESULT` | `Task → FAILED` without execution evidence |
-| Duplicate `TASK` | Create second logical Task |
-| Duplicate `RESULT` | Create second logical Result |
+| `PONG` received | Task → `COMPLETED` |
+| Missing Result | Task → `FAILED` without execution evidence |
+| Duplicate Task message | Create second logical Task |
+| Duplicate Result | Create second logical Result |
 | Unknown Result Task | Create implicit Task |
-| Queued Task during outage | `QUEUED → RUNNING` solely because time passed |
 | `SYNC_COMPLETE` | Automatically execute every queued Task without normal Task rules |
-
-These rules prevent communication events from being confused with execution
-events.
 
 ---
 
-# 16. State Evidence vs State Commands
+# 17. State Evidence vs State Commands
 
-Protocol messages can have different semantic roles.
-
-### Command
-
-The C2 requests an operation:
+## Commands
 
 ```text
 TASK
@@ -801,9 +678,7 @@ TASK_STATUS_QUERY
 PING
 ```
 
-### Acknowledgement
-
-The receiving side confirms reception/acceptance:
+## Acknowledgements
 
 ```text
 TASK_ACK
@@ -811,9 +686,7 @@ BEACON_ACK
 REGISTER_ACK
 ```
 
-### Report
-
-The sender provides information about current state:
+## Reports
 
 ```text
 TASK_STATUS
@@ -822,9 +695,7 @@ BEACON
 SYNC_STATE
 ```
 
-### Synchronization
-
-The sides reconcile retained state:
+## Synchronization
 
 ```text
 SYNC_STATE
@@ -832,65 +703,67 @@ SYNC_STATE_RESPONSE
 SYNC_COMPLETE
 ```
 
-This distinction is important because a report does not necessarily command a
-state transition, and an acknowledgement does not necessarily indicate
-completion.
+An acknowledgement does not necessarily mean completion.
+
+A report provides evidence but does not necessarily command a transition.
 
 ---
 
-# 17. Representative Transition Scenarios
+# 18. Illustrative Transition Scenarios
 
-These scenarios illustrate the mapping without redefining the underlying
-state machines.
+The following diagrams are **illustrative only**.
 
-## 17.1 Normal Task
+They do not redefine the normative state machines.
 
-```text
-C2
- │
- │ TASK T001
- ▼
-Agent
- │
- │ TASK_ACK T001
- ▼
-C2
- │
- │ Task acknowledged
- ▼
-Task = QUEUED
- │
- │ execution starts
- ▼
-Task = RUNNING
- │
- │ RESULT R001
- ▼
-Task = COMPLETED
-```
-
-## 17.2 Lost Task Acknowledgement
+## 18.1 New Connection and Synchronization
 
 ```text
-TASK
-  ↓
-WAITING_ACK
-  ↓
-ACK not received
-  ↓
-PING
-  ↓
-PONG
-  ↓
-TASK_STATUS_QUERY
-  ↓
-TASK_STATUS
+Transport
+    │
+    │ connection established
+    ▼
+Session = CONNECTED
+    │
+    │ REGISTER
+    ▼
+Agent communication = SYNCHRONIZING
+    │
+    │ SYNC_STATE / reconciliation
+    ▼
+SYNC_COMPLETE
+    │
+    ▼
+Agent communication = CONNECTED
 ```
 
-The recovery procedure is defined elsewhere. The important protocol rule is
-that the missing acknowledgement does not itself prove Task failure.
+This is the canonical distinction between Session connectivity and
+communication readiness.
 
-## 17.3 Running Task During Communication Loss
+---
+
+## 18.2 Normal Task Execution
+
+```text
+C2                         Agent
+
+ │                           │
+ │──── TASK T001 ─────────► │
+ │◄─── TASK_ACK T001 ────── │
+ │                           │
+ │      Task = QUEUED        │
+ │                           │
+ │      execution starts     │
+ │                           │
+ │      Task = RUNNING       │
+ │                           │
+ │◄──── RESULT R001 ──────── │
+ │                           │
+ │      Task = COMPLETED     │
+```
+
+---
+
+## 18.3 Running Task During Communication Loss
 
 ```text
 Task = RUNNING
@@ -899,7 +772,7 @@ Task = RUNNING
        ▼
 Task = RUNNING
 
-Agent executes locally
+Agent continues execution
        │
        ▼
 Result retained
@@ -913,14 +786,13 @@ Synchronization
 RESULT transmitted
 ```
 
-The Task remains an execution concern; the communication interruption is
-handled by the Session and synchronization mechanisms.
+The communication interruption does not itself change the Task state.
 
 ---
 
-# 18. Implementation Guidance
+# 19. Implementation Guidance
 
-Protocol handlers should follow this general pattern:
+Protocol handlers should follow:
 
 ```text
 receive message
@@ -931,7 +803,7 @@ validate
       ↓
 identify message type
       ↓
-resolve referenced domain entities
+resolve referenced entities
       ↓
 verify preconditions
       ↓
@@ -939,62 +811,49 @@ apply permitted state transition
       ↓
 persist state
       ↓
-emit operational Event / response
+emit Event / response
 ```
 
-A handler should not directly modify unrelated domain state merely because
-the information is present in a message.
+A handler MUST NOT directly modify unrelated domain state merely because
+information is present in a message.
 
-For example:
+For example, `PONG` must not mark a Task as completed.
 
-```text
-PONG
-```
-
-should be handled by liveness/session logic and must not directly mark a Task
-as completed.
-
-Similarly:
-
-```text
-RESULT
-```
-
-should update the corresponding Task/Result state according to its semantics,
-not modify the Session state except for communication evidence handled by the
-appropriate component.
+Similarly, `RESULT` should update the corresponding Task/Result state while
+Session communication evidence is handled separately.
 
 ---
 
-# 19. Relationship to Other Documents
+# 20. Relationship to Other Documents
 
-| Document | Used here for |
+| Document | Responsibility |
 |---|---|
 | `protocol.md` | Message definitions and fields |
-| `state-machines.md` | Valid states and transitions |
-| `reconnection-and-synchronization.md` | Detailed reconnect/synchronization procedure |
-| `task-lifecycle.md` | Detailed Task execution and recovery |
-| `file-transfer.md` | Detailed transfer lifecycle |
+| `state-machines.md` | Authoritative states and transitions |
+| `protocol-state-machines.md` | Protocol-to-state mapping |
+| `reconnection-and-synchronization.md` | Reconnection and reconciliation |
+| `task-lifecycle.md` | Task execution and recovery |
+| `file-transfer.md` | File Transfer lifecycle |
 | `data-model.md` | Entity identity and relationships |
 
-This document should remain focused on the **mapping between protocol events
-and domain state transitions**.
+Scenario diagrams in this document are illustrative and MUST NOT redefine
+the normative state machines.
 
 ---
 
-# 20. Open Questions
+# 21. Open Questions
 
 The following remain implementation decisions:
 
-- exact transition handling for conflicting `TASK_STATUS` reports;
-- exact behavior when a Result arrives before its Task state is synchronized;
-- retry and acknowledgement timing;
-- exact synchronization conflict-resolution rules;
-- whether `BEACON_ACK` carries explicit correlation information;
-- exact Result verification states;
+- exact handling of conflicting `TASK_STATUS` reports;
+- exact behavior when a Result arrives before Task synchronization;
+- acknowledgement/retry timing;
+- synchronization conflict resolution;
+- Beacon acknowledgement correlation;
+- Result verification details;
 - cancellation semantics;
 - duplicate-retention duration;
-- replay protection beyond bounded identifier history;
-- exact error-to-state mapping for each error category.
+- replay protection;
+- error-to-state mapping.
 
-These decisions should be recorded in `DECISIONS.md` once finalized.
+Final decisions should be recorded in `DECISIONS.md`.
