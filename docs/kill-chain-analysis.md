@@ -8,10 +8,10 @@ The objective is not to claim that the project implements a complete attack chai
 
 - which project capabilities correspond to specific phases;
 - which phases are only partially related to the project;
-- which capabilities are outside the project scope;
+- which phases are outside the project scope;
 - the security implications of the implemented capabilities.
 
-C2-AUTOMATED is primarily a **Command and Control** system with selected endpoint capabilities associated with **Actions on Objectives**.
+C2-AUTOMATED is primarily a **Command and Control** system with selected endpoint capabilities associated with **Actions on Objectives** and a limited relationship with **Installation** through persistence.
 
 ---
 
@@ -35,6 +35,8 @@ The project is not intended for:
 - production systems unless they are explicitly designated and authorized for the exercise;
 - public internet targets that are not part of the laboratory environment;
 - systems belonging to other users or organizations without authorization.
+
+The Kill Chain analysis therefore describes the project's capabilities **within this authorized academic context** and does not constitute an operational deployment recommendation.
 
 ---
 
@@ -129,7 +131,7 @@ CAP-022 → Capability 22: PERSISTENCE
 TM-023  → Threat Model entry 23
 SR-001  → Security Requirement 1
 ADR-005 → Architecture Decision Record 5
-PRO-006 → Project/Open Decision 6
+PRO-007 → Project/Open Decision 7
 ```
 
 These identifiers are **documentation references**. They are not:
@@ -148,9 +150,11 @@ For example:
 ```text
 CAP-022
    ↓
-TM-010 / TM-011
+Threat Model entries
    ↓
 Security requirements
+   ↓
+Countermeasures
    ↓
 Implementation
    ↓
@@ -208,8 +212,9 @@ Required ≠ Fully specified
 
 In particular:
 
-- `PERSISTENCE` requires a final decision about the exact supported persistence mechanism and its boundaries.
-- `SELF_DESTRUCT` requires a final decision about what is removed or terminated. This is tracked in `PRO-006`.
+- `PERSISTENCE` requires a final decision about the exact supported persistence mechanism and its boundaries;
+- `SELF_DESTRUCT` requires a final decision about what is removed or terminated;
+- the `SELF_DESTRUCT` decision is tracked through `PRO-007`.
 
 Neither capability should therefore be classified as `Bonus` merely because its detailed implementation is still open.
 
@@ -243,6 +248,8 @@ The `SYSINFO` capability should not be considered reconnaissance in the Kill Cha
 
 `SYSINFO` is an **endpoint information-collection operation** executed after an agent is already present and communicating with the C2.
 
+It therefore belongs to the endpoint capability layer rather than to pre-compromise reconnaissance.
+
 ### Relevant capability
 
 None directly.
@@ -266,6 +273,8 @@ Reconnaissance
 Weaponization is outside the project scope.
 
 The project does not define a subsystem for constructing malware, exploit packages, or attack payloads as part of the Kill Chain.
+
+The agent is treated as an already-authorized laboratory component rather than as the output of a weaponization subsystem.
 
 ### Conclusion
 
@@ -298,6 +307,8 @@ Therefore:
 
 > **File transfer is not equivalent to a complete Kill Chain Delivery capability.**
 
+The transport layer is responsible for communication, while the application protocol defines the exchanged messages. File transfer is a dedicated subsystem built on top of these mechanisms.
+
 ### Conclusion
 
 ```text
@@ -321,7 +332,7 @@ The C2-AUTOMATED project does not implement an exploitation subsystem.
 
 The agent is not designed to gain access by exploiting a vulnerability as part of its core architecture.
 
-The project can execute commands on an endpoint where an agent is already running, but:
+The project can execute supported commands on an endpoint where an agent is already running, but:
 
 > **SHELL execution is not equivalent to Exploitation.**
 
@@ -379,7 +390,7 @@ The relationship is **partial**.
 
 This is the **central Kill Chain phase represented by C2-AUTOMATED**.
 
-The architecture is specifically designed around managing agents, communication sessions, tasks, results, and file transfers.
+The architecture is specifically designed around managing agents, communication sessions, tasks, results, synchronization, and file transfers.
 
 Relevant capabilities are:
 
@@ -388,7 +399,7 @@ CAP-001  Agent management
 CAP-002  Session management
 CAP-003  Multi-agent management
 CAP-004  Beaconing
-CAP-005  TCP/TLS
+CAP-005  TCP/TLS communication
 CAP-006  Application protocol
 CAP-007  Asynchronous task queuing
 CAP-008  Task execution
@@ -408,7 +419,7 @@ C2 Server
    ├── Sessions
    ├── Tasks
    ├── Results
-   └── Files
+   └── File Transfers
    │
    ▼
 Agent
@@ -426,10 +437,12 @@ hostname
 OS
 architecture
 address
-status
+health
 last_seen
 transport
 ```
+
+The persistent identity of the Agent is distinct from an individual communication Session.
 
 ### 12.2 Session management
 
@@ -438,18 +451,22 @@ transport
 ```text
 Agent A001
     │
-    ├── Session S41
-    ├── Session S42
-    └── Session S43
+    ├── Session S041
+    ├── Session S042 = DISCONNECTED
+    └── Session S043 = CONNECTED
 ```
 
-The agent identity persists while communication sessions may change.
+A new connection creates a **new Session**.
+
+A previous Session is not reopened.
 
 ### 12.3 Multi-agent management
 
 `CAP-003` addresses the multi-agent requirement.
 
-The server must be able to manage multiple agents without treating the whole C2 as a single-agent connection.
+The server must be able to manage multiple agents simultaneously without treating the C2 as a single-agent connection.
+
+The `AgentManager` manages agent identity and inventory, while the `SessionManager` manages communication sessions.
 
 ### 12.4 Beaconing
 
@@ -458,15 +475,26 @@ The server must be able to manage multiple agents without treating the whole C2 
 This remains conceptually separate from transport:
 
 ```text
-Beacon  = when to communicate
-Transport = how to communicate
+Beacon     = when to communicate
+Transport  = how to communicate
+Protocol   = what to communicate
 ```
 
-### 12.5 TCP/TLS
+The project also distinguishes routine beaconing from immediate connectivity testing:
+
+```text
+BEACON / BEACON_ACK
+        ≠
+PING / PONG
+```
+
+### 12.5 TCP/TLS communication
 
 `CAP-005` defines the mandatory MVP communication mechanism.
 
-TLS provides protection for communication in transit.
+TCP provides the transport mechanism and TLS protects communication in transit.
+
+The transport abstraction is deliberately separated from the application protocol so that future transports can be considered without redesigning the complete C2 core.
 
 ### 12.6 Application protocol
 
@@ -476,36 +504,59 @@ Representative message types include:
 
 ```text
 REGISTER
+REGISTER_ACK
 BEACON
+BEACON_ACK
 TASK
+TASK_ACK
+TASK_STATUS
+TASK_STATUS_QUERY
 RESULT
+PING
+PONG
+SYNC_STATE
+SYNC_STATE_RESPONSE
+SYNC_COMPLETE
 FILE_START
 FILE_CHUNK
 FILE_END
 ERROR
 ```
 
+The protocol therefore represents both normal operation and recovery/synchronization behaviour.
+
 ### 12.7 Asynchronous task queuing
 
-`CAP-007` provides the asynchronous model.
+`CAP-007` provides the asynchronous task model.
 
-A task can remain pending while an agent is unavailable and be delivered during a subsequent communication opportunity.
-
-Conceptually:
+The authoritative Task lifecycle is:
 
 ```text
-Task created
-     ↓
 PENDING
-     ↓
-Agent unavailable
-     ↓
-Still pending
-     ↓
-Agent communicates
-     ↓
-SENT
+   ↓
+WAITING_ACK
+   ↓
+QUEUED
+   ↓
+RUNNING
+   ├──→ COMPLETED
+   └──→ FAILED
 ```
+
+Additional terminal states include:
+
+```text
+TIMEOUT
+CANCELLED
+```
+
+`WAITING_ACK` indicates that the C2 has dispatched the task and is awaiting confirmation of acceptance.
+
+It does **not** mean that execution has already started.
+
+`TASK_ACK` confirms acceptance and allows the task to progress to `QUEUED`.
+
+Communication failure does not automatically mean that the task failed.
 
 ### 12.8 Task execution
 
@@ -525,31 +576,106 @@ Execution
 Result
 ```
 
+This separation allows task lifecycle management to remain distinct from the implementation of individual commands.
+
 ### 12.9 Result management
 
 `CAP-009` represents the server-side handling of results returned by agents.
+
+A Result belongs to a Task when a `task_id` is present.
+
+The `ResultManager` is responsible for:
+
+- receiving results;
+- validating them;
+- associating them with Tasks;
+- storing them;
+- exposing them to the operator;
+- handling unmatched/orphan results.
+
+Execution state and Result delivery are therefore not treated as the same concept.
+
+A result may also be transmitted after a communication interruption during a later synchronization process.
 
 ### 12.10 File transfer
 
 `CAP-010` extends the C2 communication model to file transfers.
 
-File transfer uses a dedicated transfer lifecycle rather than treating an entire file as an ordinary task result.
+File transfer uses a dedicated transfer lifecycle rather than treating an entire file as an ordinary Task Result.
+
+Conceptually:
+
+```text
+FILE_START
+    ↓
+FILE_CHUNK
+    ↓
+FILE_CHUNK
+    ↓
+...
+FILE_END
+    ↓
+verification
+```
+
+A dedicated `transfer_id` identifies the transfer.
+
+The transfer is distinct from:
+
+```text
+agent_id
+task_id
+session_id
+result_id
+```
+
+The File Manager handles transfer lifecycle concerns while file storage handles the actual file contents.
+
+### 12.11 Registration and synchronization
+
+C2-AUTOMATED also includes explicit registration and synchronization behaviour as part of its Command & Control model.
+
+The canonical flow is:
+
+```text
+New connection
+      ↓
+New Session
+      ↓
+Session = CONNECTING
+      ↓
+Transport established
+      ↓
+Session = CONNECTED
+      ↓
+REGISTER
+      ↓
+Agent communication = SYNCHRONIZING
+      ↓
+State reconciliation
+      ↓
+SYNC_COMPLETE
+      ↓
+Agent communication = CONNECTED
+```
+
+The `Message Router` routes incoming protocol messages to the appropriate subsystem, while the `Synchronization Manager` coordinates reconciliation after registration and reconnection.
 
 ### Conclusion
 
 ```text
 Command & Control
         │
-        ├── CAP-001
-        ├── CAP-002
-        ├── CAP-003
-        ├── CAP-004
-        ├── CAP-005
-        ├── CAP-006
-        ├── CAP-007
-        ├── CAP-008
-        ├── CAP-009
-        └── CAP-010
+        ├── CAP-001 Agent management
+        ├── CAP-002 Session management
+        ├── CAP-003 Multi-agent management
+        ├── CAP-004 Beaconing
+        ├── CAP-005 TCP/TLS
+        ├── CAP-006 Application protocol
+        ├── CAP-007 Asynchronous task queuing
+        ├── CAP-008 Task execution
+        ├── CAP-009 Result management
+        └── CAP-010 File transfer
 ```
 
 This is the **primary Kill Chain phase implemented by the project**.
@@ -580,6 +706,18 @@ This should not be classified as Exploitation.
 
 The capability assumes the agent is already running.
 
+The command execution mechanism is separated into:
+
+```text
+Task
+  ↓
+Executor
+  ↓
+Command
+  ↓
+Platform
+```
+
 ### 13.2 SYSINFO
 
 `CAP-020` gathers information from the endpoint.
@@ -594,11 +732,25 @@ architecture
 
 This is endpoint information collection rather than Kill Chain Reconnaissance.
 
+The information is collected after the agent is already present and communicating with the C2.
+
 ### 13.3 FILES
 
 `CAP-021` supports controlled file operations within the project's designed file-handling boundaries.
 
 It is associated with Actions on Objectives because it allows the operator to request file-related actions after communication with the endpoint has been established.
+
+The project distinguishes:
+
+```text
+File operation
+      ↓
+File Transfer
+      ↓
+File Storage
+```
+
+from ordinary Task Result handling.
 
 ### 13.4 PERSISTENCE
 
@@ -608,13 +760,15 @@ Its exact supported mechanism and limitations remain an open design question.
 
 The capability is required, but its precise implementation boundaries must be defined before it is considered fully specified.
 
+The project therefore does not claim to implement a complete or unrestricted Installation phase.
+
 ### 13.5 SELF_DESTRUCT
 
 `CAP-023` represents a controlled endpoint lifecycle action.
 
-Its exact scope is tracked by `PRO-006`.
+Its exact scope is tracked by `PRO-007`.
 
-Possible scopes identified during the design phase include:
+The design discussion has identified several possible levels of cleanup:
 
 ```text
 A. Process termination only
@@ -629,11 +783,13 @@ D. Full agent removal
    + persistence cleanup
 ```
 
-The project does not assume unrestricted deletion.
+The final implementation must explicitly define the permitted scope.
+
+The project does not assume unrestricted filesystem deletion.
 
 Therefore:
 
-> **SELF_DESTRUCT is a controlled lifecycle capability, not unrestricted filesystem deletion.**
+> **SELF_DESTRUCT is a controlled lifecycle capability, not unrestricted deletion.**
 
 ### Conclusion
 
@@ -670,6 +826,8 @@ Examples include:
 
 This allows the Kill Chain analysis to remain connected to the project's broader security documentation.
 
+The exact security requirements and countermeasures derived from these threats are maintained in the corresponding security documentation rather than being duplicated here.
+
 ---
 
 ## 15. Important Capability Distinctions
@@ -698,13 +856,45 @@ Persistence is explicitly represented by `CAP-022`.
 
 The project intends `SELF_DESTRUCT` to be a controlled lifecycle operation.
 
-Its precise boundaries remain open under `PRO-006`.
+Its precise boundaries remain open under `PRO-007`.
 
 ### SYSINFO ≠ Reconnaissance
 
 `SYSINFO` gathers endpoint information after the agent is already active.
 
 It is therefore treated as an endpoint action rather than a pre-compromise reconnaissance capability.
+
+### Communication failure ≠ Task failure
+
+Loss of communication does not automatically mean that a Task has failed.
+
+For example:
+
+```text
+C2
+ │
+ │ TASK
+ ▼
+Agent
+ │
+ │ task accepted/executed
+ │
+ X TASK_ACK or RESULT lost
+```
+
+The C2 may need to recover the Task state through:
+
+```text
+PING
+  ↓
+PONG
+  ↓
+TASK_STATUS_QUERY
+  ↓
+TASK_STATUS
+```
+
+This distinction is important because the Command & Control layer includes reliability and synchronization mechanisms rather than treating every communication interruption as execution failure.
 
 ---
 
@@ -766,7 +956,9 @@ C2 Core
    ├── Session Manager
    ├── Task Manager
    ├── Result Manager
-   └── File Manager
+   ├── File Manager
+   ├── Message Router
+   └── Synchronization Manager
    │
    ▼
 Protocol
@@ -777,6 +969,10 @@ Transport
    ▼
 Agent
    │
+   ├── Core
+   ├── Beacon
+   ├── Protocol
+   ├── Transport
    ├── Executor
    ├── Commands
    └── Platform
@@ -785,9 +981,13 @@ Agent
 This supports the interpretation that:
 
 - the C2 core corresponds primarily to **Command & Control**;
+- the protocol and transport layers support the communication required for C2;
 - the endpoint command layer contains selected **Actions on Objectives** capabilities;
 - `PERSISTENCE` creates a limited relationship with **Installation**;
+- file transfer has a partial relationship with **Delivery**, but is not a complete delivery mechanism;
 - the remaining Kill Chain phases are either partially related or outside the project's scope.
+
+The architecture therefore provides the technical foundation for the capabilities mapped in this document without implying that every component corresponds to a separate Kill Chain phase.
 
 ---
 
@@ -808,6 +1008,19 @@ The project should be understood as:
                               relationships
 ```
 
+Its position in the Kill Chain can be summarized as:
+
+```text
+Reconnaissance     ── Out of scope
+Weaponization      ── Out of scope
+Delivery           ── Partial relationship
+Exploitation       ── Out of scope
+Installation       ── Partial relationship
+Command & Control  ── Primary project capability
+Actions on Objectives
+                   ── Selected endpoint capabilities
+```
+
 It does **not** constitute a complete implementation of the Cyber Kill Chain.
 
 The strongest representation is:
@@ -815,3 +1028,18 @@ The strongest representation is:
 > **C2-AUTOMATED primarily implements Command and Control, with selected endpoint capabilities associated with Actions on Objectives and a limited relationship with Installation through PERSISTENCE.**
 
 The purpose of this mapping is therefore to demonstrate the project's position within the attack lifecycle without overstating its capabilities.
+
+The analysis should remain synchronized with:
+
+- `ARCHITECTURE.md` for component responsibilities;
+- `DECISIONS.md` for accepted and open architectural decisions;
+- `docs/data-model.md` for domain entities and relationships;
+- `docs/state-machines.md` for authoritative state definitions;
+- `docs/protocol.md` for protocol messages and their semantics;
+- `docs/reconnection-and-synchronization.md` for recovery and synchronization behaviour;
+- `docs/task-lifecycle.md` for Task lifecycle and recovery;
+- `docs/file-transfer.md` for file-transfer behaviour;
+- `docs/countermeasures.md` for security controls;
+- `docs/requirements-mapping.md` for implementation and requirement status.
+
+This document provides the **Kill Chain interpretation** of those capabilities rather than replacing their detailed technical specifications.
