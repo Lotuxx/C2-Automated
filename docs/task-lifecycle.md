@@ -2,111 +2,121 @@
 
 > **Status: Work in Progress**
 >
-> This document describes the current conceptual task model used by
-> C2-AUTOMATED. The lifecycle, states, recovery mechanisms, and implementation
-> details may evolve as the architecture and protocol are finalized.
+> This document defines the conceptual Task lifecycle used by C2-AUTOMATED,
+> including creation, dispatch, acknowledgement, queuing, execution, result
+> handling, failure, timeout, cancellation, and Task-specific recovery.
+>
+> The authoritative state definitions are shared with `state-machines.md`.
+> Protocol message semantics are defined in `protocol.md` and
+> `protocol-state-transition.md`. Reconnection and cross-entity
+> reconciliation are defined in `reconnection-and-synchronization.md`.
 
 ---
 
 ## 1. Purpose
 
-A **Task** represents an operation requested by the operator and intended for
-execution by a specific agent.
+A **Task** represents one logical operation requested by the operator and
+intended for execution by one specific Agent.
 
-The task system separates:
+The Task system separates:
 
-- task creation;
-- task tracking;
-- task queuing;
-- task delivery;
-- task acknowledgement;
-- task execution;
-- task status reporting;
-- result handling;
-- failure and timeout handling;
-- task recovery.
+- Task creation;
+- Task tracking;
+- Task queuing;
+- Task dispatch;
+- acknowledgement;
+- execution;
+- status reporting;
+- Result handling;
+- failure;
+- timeout;
+- cancellation;
+- Task-specific recovery.
 
-This separation allows the C2 server to manage multiple agents and multiple
-independent tasks without coupling the operator interface directly to a
-single network operation.
+The model is designed for **asynchronous multi-Agent operation**.
 
-The model is explicitly designed for **asynchronous multi-agent operation**.
+A Task remains a logical object independently of the protocol messages used to
+communicate about it.
 
 ---
 
 ## 2. Task Responsibility
 
-The responsibility for a task is divided between the C2 server and the agent.
+Responsibility is divided between the C2 and the Agent.
 
 ```text
 C2 Server
     │
-    ├── create task
-    ├── track task
-    ├── queue task
-    ├── dispatch task
-    ├── process acknowledgement
-    ├── query task status when necessary
-    └── process result
+    ├── create Task
+    ├── track Task
+    ├── queue / schedule Task
+    ├── dispatch Task
+    ├── process TASK_ACK
+    ├── recover uncertain Task state
+    └── process Result
           │
           ▼
         Agent
           │
-          ├── receive task
-          ├── validate task
-          ├── acknowledge task
-          ├── queue task if necessary
-          ├── execute task
-          ├── report task status
-          └── return result
+          ├── receive Task
+          ├── validate Task
+          ├── acknowledge Task
+          ├── queue Task if necessary
+          ├── execute Task
+          ├── report Task status
+          └── produce Result
 ```
 
-The **C2 server manages the server-side task lifecycle**, while the
-**agent is responsible for the actual processing and current runtime state of
-its tasks**.
+The C2 maintains the server-side Task record.
 
-Neither side should assume that its local view of the other side's state is
-always immediately synchronized.
+The Agent maintains the runtime execution state required to process the Task
+and recover from temporary communication loss.
+
+Neither side should assume that its local view is always immediately
+synchronized with the other side.
 
 ---
 
-## 3. Task vs Message vs Result
+# 3. Task vs Message vs Result
 
-These concepts must remain distinct.
+These concepts are distinct.
 
 ```text
 Task
     = logical work requested by the C2
 
 Message
-    = one protocol communication unit carrying information
+    = one protocol communication unit
 
 Result
-    = outcome/data produced by an agent after processing a task
+    = outcome/data produced while processing a Task
 ```
 
-A single task can therefore generate several protocol messages:
+One Task may therefore generate several protocol messages:
 
 ```text
-Task T001
-    │
-    ├── TASK
-    ├── TASK_ACK
-    ├── TASK_STATUS
-    └── RESULT
+T001
+ │
+ ├── TASK
+ ├── TASK_ACK
+ ├── TASK_STATUS
+ └── RESULT
 ```
 
-The `task_id` identifies the logical work, while `message_id` identifies one
-specific communication message.
+`task_id` identifies the logical Task.
 
-A message such as `BEACON` does not represent a Task and must not cause the
-C2 to create an artificial Task.
+`message_id` identifies one protocol message.
+
+`result_id` identifies one logical Result.
+
+A protocol message that is unrelated to a Task, such as `BEACON` or `PING`,
+must not create an artificial Task.
 
 ---
 
 # 4. Task Structure
 
-A Task is conceptually associated with the following information:
+A Task is conceptually represented by:
 
 ```text
 Task
@@ -124,10 +134,12 @@ Task
 │
 ├── ack_deadline
 ├── execution_deadline
-└── error
+├── timeout_reason?
+├── result_id?
+└── error?
 ```
 
-The exact data types and additional fields remain to be finalized.
+The exact types and additional fields remain implementation decisions.
 
 ### `task_id`
 
@@ -140,19 +152,21 @@ It is used to correlate:
 - `TASK_STATUS_QUERY`;
 - `TASK_STATUS`;
 - `RESULT`;
-- other task-related events.
+- Task-related Events.
 
 ### `agent_id`
 
-Identifies the Agent to which the Task belongs.
+Identifies the Agent for which the Task was created.
 
-A Task is always associated with one intended Agent.
+A Task belongs to one intended Agent.
 
 ### `command_type`
 
-Identifies the operation that the Agent is expected to perform.
+Identifies the operation to perform.
 
-Examples include the project-defined commands such as:
+The available command types are defined by the project implementation.
+
+Examples currently considered include:
 
 ```text
 SHELL
@@ -162,6 +176,9 @@ PERSISTENCE
 SELF_DESTRUCT
 ```
 
+These are command examples rather than requirements of the Task state
+machine.
+
 ### `parameters`
 
 Contains the parameters required by the selected command.
@@ -170,10 +187,7 @@ Parameters must be validated before execution.
 
 ### Timestamps
 
-Timestamps provide information about the Task lifecycle and support
-tracking, timeout handling, troubleshooting, and logging.
-
-The model distinguishes, where applicable:
+The Task may record:
 
 ```text
 created_at
@@ -183,33 +197,34 @@ started_at
 completed_at
 ```
 
-`dispatched_at` indicates when the C2 dispatched the Task.
-
-`acknowledged_at` indicates when the C2 received `TASK_ACK`.
-
-`started_at` indicates when the Agent reports that execution started.
+These timestamps support lifecycle tracking, timeout handling, troubleshooting,
+and logging.
 
 ### Deadlines
 
-The model may include separate deadlines for:
+Separate deadlines may be used for:
 
 ```text
 ack_deadline
 execution_deadline
 ```
 
-This allows communication timeout and execution timeout to be treated
-separately.
+This allows communication uncertainty and execution timeout to remain
+distinct.
 
-### `status`
+### `result_id`
 
-Represents the current lifecycle state of the Task.
+Associates a completed Task with its corresponding Result where applicable.
+
+### `error`
+
+Contains relevant failure information when the Task fails.
 
 ---
 
 # 5. Task States
 
-The current conceptual lifecycle is:
+The conceptual lifecycle is:
 
 ```text
                          CREATE
@@ -225,95 +240,48 @@ The current conceptual lifecycle is:
                    ┌──────────────┐
                    │ WAITING_ACK  │
                    └──────┬───────┘
-                       ┌───┴────┐
-                     ACK       timeout
-                       │        │
-                       ▼        ▼
-                 ┌─────────┐  TIMEOUT
-                 │ QUEUED  │
-                 └────┬────┘
-                      │
-                agent starts
-                      │
-                      ▼
-                 ┌─────────┐
-                 │ RUNNING │
-                 └────┬────┘
-                    ┌─┴──┐
-                    │    │
-                 success failure
-                    │    │
-                    ▼    ▼
-               COMPLETED FAILED
+                          │
+                       TASK_ACK
+                          │
+                          ▼
+                    ┌─────────┐
+                    │ QUEUED  │
+                    └────┬────┘
+                         │
+                      starts
+                         │
+                         ▼
+                    ┌─────────┐
+                    │ RUNNING │
+                    └────┬────┘
+                       ┌─┴──┐
+                    success failure
+                       │      │
+                       ▼      ▼
+                 COMPLETED   FAILED
 ```
 
-The current conceptual Task states are:
+The conceptual states are:
 
 | State | Meaning |
 |---|---|
-| `PENDING` | Task has been created but has not yet been dispatched. |
-| `WAITING_ACK` | Task has been dispatched and the C2 is waiting for the Agent to acknowledge it. |
-| `QUEUED` | Agent has accepted the Task but has not started executing it yet. |
-| `RUNNING` | Agent is currently executing the Task. |
-| `COMPLETED` | Requested operation completed successfully. |
-| `FAILED` | Requested operation was accepted or started but execution did not complete successfully. |
-| `TIMEOUT` | Required communication or execution response was not received within the applicable deadline. |
+| `PENDING` | Task exists but has not yet been dispatched. |
+| `WAITING_ACK` | Task has been dispatched and the C2 is waiting for Agent acceptance. |
+| `QUEUED` | Agent has accepted the Task but has not started it. |
+| `RUNNING` | Agent is executing the Task. |
+| `COMPLETED` | Task completed successfully. |
+| `FAILED` | Task execution did not complete successfully. |
+| `TIMEOUT` | Required communication or execution response exceeded its applicable deadline. |
 | `CANCELLED` | Task was explicitly cancelled, where cancellation is supported. |
 
-`CANCELLED` remains subject to the final cancellation design.
+`CANCELLED` and the exact cancellation semantics remain subject to final
+implementation decisions.
 
 ---
 
-# 6. `PENDING`
+# 6. Normal Lifecycle
 
-A Task enters `PENDING` after it has been created by the C2 server.
-
-```text
-Operator
-    │
-    ▼
-Interface
-    │
-    ▼
-C2 Core
-    │
-    ▼
-Task Manager
-    │
-    ▼
-PENDING
-```
-
-At this stage, the Task exists logically but has not yet been dispatched.
-
-A pending Task may remain in this state because:
-
-- it has not yet been selected by the scheduler;
-- the Agent is unavailable;
-- the C2 is waiting for an appropriate communication opportunity;
-- another scheduling condition prevents immediate dispatch.
-
----
-
-# 7. `WAITING_ACK`
-
-A Task enters `WAITING_ACK` after the C2 has dispatched it and is waiting for
-confirmation from the Agent.
-
-```text
-Task Manager
-    │
-    ▼
-Protocol
-    │
-    ▼
-Transport
-    │
-    ▼
-Agent
-```
-
-The conceptual transition is:
+The normal lifecycle is:
 
 ```text
 PENDING
@@ -321,113 +289,131 @@ PENDING
    │ dispatch
    ▼
 WAITING_ACK
+   │
+   │ TASK_ACK
+   ▼
+QUEUED
+   │
+   │ execution starts
+   ▼
+RUNNING
+   │
+   ├───────────────┐
+   │               │
+success         failure
+   │               │
+   ▼               ▼
+COMPLETED        FAILED
 ```
 
-`WAITING_ACK` means:
+For a Task that starts immediately after acceptance, the Agent may effectively
+move through:
 
-> The C2 has attempted to deliver the Task but does not yet have confirmation
-> that the Agent accepted it.
+```text
+WAITING_ACK
+   ↓
+RUNNING
+```
 
-It does **not** mean that the Task has failed.
+without remaining in `QUEUED` for a significant amount of time.
 
-It also does not mean that execution has completed.
+The lifecycle therefore represents logical states rather than mandatory
+minimum durations.
 
 ---
 
-# 8. `TASK_ACK`
+# 7. `PENDING`
 
-The Agent responds to an accepted Task with:
-
-```text
-TASK_ACK
-task_id = T001
-```
-
-The message is processed through the C2 message-routing layer:
+A Task enters `PENDING` when it is created by the C2.
 
 ```text
-TASK_ACK(T001)
-       │
-       ▼
-Message Router
-       │
-       ▼
+Operator
+   │
+   ▼
+Interface
+   │
+   ▼
 Task Manager
-       │
-       ▼
-Task state update
+   │
+   ▼
+PENDING
 ```
 
-The acknowledgement means:
+The Task exists logically but has not yet been dispatched.
 
-> The Agent received and accepted Task `T001`.
+A Task may remain pending because:
 
-The acknowledgement is not itself the final execution result.
+- the scheduler has not selected it;
+- the Agent is unavailable;
+- the C2 is waiting for a communication opportunity;
+- another scheduling condition prevents dispatch.
 
-Depending on how the Agent schedules the Task, the next state may be:
+A Task being `PENDING` does not imply that the Agent has received it.
+
+---
+
+# 8. `WAITING_ACK`
+
+After dispatch, the Task enters:
 
 ```text
 WAITING_ACK
-      ↓
-QUEUED
 ```
 
-or, for an immediately executable Task:
+This means:
+
+> The C2 has dispatched the Task and is waiting for confirmation that the
+> Agent accepted it.
+
+It does not mean:
+
+- the Task failed;
+- execution has started;
+- execution has completed.
+
+The relevant protocol exchange is:
 
 ```text
-WAITING_ACK
-      ↓
-RUNNING
+C2
+ │
+ │ TASK(T001)
+ ▼
+Agent
+ │
+ │ TASK_ACK(T001)
+ ▼
+C2
 ```
+
+The `TASK_ACK` confirms acceptance, not successful execution.
 
 ---
 
 # 9. `QUEUED`
 
-`QUEUED` represents an Agent-side state in which the Task has been accepted
-but execution has not started yet.
+`QUEUED` means that the Agent has accepted the Task but has not started
+executing it.
 
-For example:
+Example:
 
 ```text
 Agent A001
- ├── T001 → RUNNING
- ├── T002 → QUEUED
- └── T003 → QUEUED
+
+T001 → RUNNING
+T002 → QUEUED
+T003 → QUEUED
 ```
 
-This is useful because the project supports multiple Tasks associated with
-the same Agent.
+This permits several Tasks to be associated with the same Agent without
+requiring them all to execute simultaneously.
 
-A Task may therefore follow:
-
-```text
-TASK
-   ↓
-TASK_ACK
-   ↓
-QUEUED
-   ↓
-RUNNING
-```
-
-However, a very fast or immediately executable Task may transition directly:
-
-```text
-TASK
-   ↓
-TASK_ACK
-   ↓
-RUNNING
-```
-
-The absence of a visibly long `QUEUED` period is therefore not an error.
+The exact scheduling and concurrency model remain implementation decisions.
 
 ---
 
 # 10. `RUNNING`
 
-A Task reaches `RUNNING` when the Agent reports that execution has started.
+A Task enters `RUNNING` when execution starts on the Agent.
 
 Conceptually:
 
@@ -435,10 +421,10 @@ Conceptually:
 TASK
   │
   ▼
-Protocol validation
+validation
   │
   ▼
-Task acceptance / queue
+acceptance / queue
   │
   ▼
 Executor
@@ -447,355 +433,187 @@ Executor
 Command Handler
   │
   ▼
-Execution
+execution
 ```
 
-The Executor is responsible for dispatching the Task to the appropriate
-command implementation.
+`RUNNING` belongs to the Task.
 
-`RUNNING` belongs to the **Task**, not to the Agent.
+It must not be confused with the Agent's activity state.
 
 For example:
 
 ```text
-Agent A001
-    agent_status = ALIVE
-    activity_state = BUSY
+Agent:
+    health = ALIVE
+    activity = BUSY
 
-Task T001
-    status = RUNNING
+Task:
+    T001 = RUNNING
 ```
 
 ---
 
 # 11. `COMPLETED`
 
-A Task reaches `COMPLETED` when the requested operation has successfully
-finished.
+A Task enters `COMPLETED` when its requested operation successfully finishes.
 
-The normal flow is:
+A successful completion should normally be associated with a Result.
 
 ```text
-Command
-   │
-   ▼
-Executor
-   │
-   ▼
-Result
-   │
-   ▼
-Agent Protocol
-   │
-   ▼
-C2 Protocol
-   │
-   ▼
-Result Manager
-   │
-   ▼
-Task Manager
-   │
-   ▼
-COMPLETED
+Agent
+  │
+  ├── execute T001
+  │
+  └── produce R001
+          │
+          ▼
+        C2
+          │
+          ▼
+     T001 = COMPLETED
 ```
 
-A successful Task completion should therefore be traceable through its
-corresponding Result.
+The Result provides the execution outcome/data; the Task records the lifecycle
+state.
+
+A Result may be transmitted later if communication is temporarily
+unavailable.
 
 ---
 
 # 12. `FAILED`
 
-A Task enters `FAILED` when the Agent reports that the requested operation
-could not be completed successfully.
+A Task enters `FAILED` when execution does not complete successfully.
 
 Example:
 
 ```text
-TASK T001
-   ↓
-TASK_ACK
-   ↓
+T001
+ │
+ ▼
 RUNNING
-   ↓
-RESULT
-status = FAILURE
-   ↓
+ │
+ │ execution failure
+ ▼
 FAILED
 ```
 
 Potential causes include:
 
 - command execution failure;
-- command-specific error;
 - invalid execution conditions;
-- unavailable local resource;
+- unavailable local resources;
+- command-specific errors;
 - other implementation-defined execution failures.
 
-Execution failure is distinct from communication timeout.
+Execution failure is distinct from communication failure.
 
 ---
 
 # 13. `TIMEOUT`
 
-`TIMEOUT` is used when the C2 cannot obtain required communication or task
-progress within the applicable deadline.
+`TIMEOUT` represents failure to obtain required information within an
+applicable deadline.
 
-The project distinguishes timeout from execution failure.
+There are two principal timeout categories.
 
-### Acknowledgement timeout
+### 13.1 Acknowledgement timeout
 
 ```text
 WAITING_ACK
-      │
-      │ no TASK_ACK
-      ▼
-TIMEOUT / recovery procedure
+     │
+     │ ack_deadline exceeded
+     ▼
+recovery
 ```
 
-### Execution timeout
+An acknowledgement timeout means that the C2 did not receive confirmation in
+time.
+
+It does **not prove that the Agent never received or accepted the Task**.
+
+Task-specific recovery should therefore be attempted before redispatch where
+possible.
+
+### 13.2 Execution timeout
 
 ```text
 RUNNING
    │
-   │ no completion within execution deadline
+   │ execution_deadline exceeded
    ▼
 TIMEOUT
 ```
 
-A timeout therefore means:
+An execution timeout means that the expected completion condition was not
+observed within the configured deadline.
 
-> The C2 did not obtain the expected information within the defined period.
+It does not necessarily prove that execution stopped at the deadline.
 
-It does **not necessarily prove that the Task never executed**.
+The final timeout policy remains implementation-dependent.
 
 ---
 
-# 14. Task and Agent State Are Independent
+# 14. Communication Failure vs Task Failure
 
-Task state must not be confused with Agent health.
+This distinction is fundamental.
+
+```text
+Communication failure
+        ≠
+Task failure
+```
 
 For example:
 
 ```text
-Agent A001
-    agent_status = ALIVE
-    activity_state = BUSY
+T001 = RUNNING
 
-Task T001
-    status = RUNNING
+connection lost
+
+T001 may remain:
+    RUNNING
 ```
 
-Or:
+The Agent may continue executing the Task and later produce:
 
 ```text
-Agent A001
-    agent_status = LIKELY_DEAD
-    activity_state = UNKNOWN
-
-Task T001
-    status = RUNNING
+T001 = COMPLETED
+R001 = available locally
 ```
 
-The second case means that the C2 has not established the final outcome of
-T001 even though communication with A001 has become uncertain.
+Therefore, communication loss must not automatically cause:
 
-This separation is essential to the asynchronous model.
+```text
+RUNNING → FAILED
+```
+
+or:
+
+```text
+RUNNING → CANCELLED
+```
+
+The detailed reconnection and synchronization procedure is defined in
+`reconnection-and-synchronization.md`.
 
 ---
 
-# 15. Task Queue
+# 15. Task Status Reporting
 
-The C2 server must be able to manage several Tasks independently.
-
-Conceptually:
+The Agent can report Task state through:
 
 ```text
-TASK QUEUES
-
-A001 → [T004, T005]
-A002 → [T006]
-A003 → []
-```
-
-On the Agent side, several Tasks may also be maintained:
-
-```text
-A001
- ├── T004 → RUNNING
- ├── T005 → QUEUED
- └── T006 → QUEUED
-```
-
-The queue is logically associated with Agents so that a Task intended for one
-Agent is not accidentally dispatched to another.
-
-The exact queue implementation and scheduling mechanism have not yet been
-finalized.
-
----
-
-# 16. Asynchronous Task Handling
-
-The task system is explicitly designed around asynchronous multi-agent
-operation.
-
-The intended model is not:
-
-```text
-Operator
-   ↓
-send command
-   ↓
-wait for completion
-   ↓
-receive result
-```
-
-for every interaction.
-
-Instead:
-
-```text
-Operator
-   ↓
-Create Task
-   ↓
-PENDING
-   ↓
-Queue / Dispatch
-   ↓
-Agent
-```
-
-The C2 server remains able to manage other Agents and Tasks while an
-individual Task is being processed.
-
-Conceptually:
-
-```text
-                 C2 SERVER
-                     │
-          ┌──────────┼──────────┐
-          ▼          ▼          ▼
-        A001       A002       A003
-         │          │          │
-      T001/T002     T003     T004/T005
-```
-
-One Agent's Task processing must not block unrelated Tasks belonging to other
-Agents.
-
-The exact concurrency and scheduling mechanism remains to be defined.
-
----
-
-# 17. Task and Agent Relationship
-
-Every Task is intended for a specific Agent.
-
-```text
-Agent A001
-   │
-   ├── Task T001
-   ├── Task T002
-   └── Task T003
-
-Agent A002
-   │
-   └── Task T004
-```
-
-The `agent_id` therefore provides the authoritative association between the
-Task and its intended Agent.
-
----
-
-# 18. Task and Result Relationship
-
-A Task may produce a corresponding Result.
-
-```text
-Agent
-   │
-   └── Task T004
-          │
-          └── Result R009
-```
-
-The `task_id` allows the C2 server to associate a returned Result with the
-correct Task.
-
-This provides traceability:
-
-```text
-Operator Request
-      ↓
-Task
-      ↓
-Agent Execution
-      ↓
-Result
-```
-
-A Result may arrive after an arbitrary communication delay because the
-architecture is asynchronous.
-
-The exact Task/Result cardinality and persistence rules remain part of the
-data-model design.
-
----
-
-# 19. Task / Protocol Interaction
-
-A Task is an application-level object.
-
-The protocol defines how that Task is represented during communication.
-
-Conceptually:
-
-```text
-Task Object
-     │
-     ▼
-TASK Message
-     │
-     ▼
-Transport
-     │
-     ▼
-Agent
-```
-
-The same Task may subsequently generate:
-
-```text
-TASK_ACK
 TASK_STATUS
-RESULT
 ```
 
-The logical Task should remain independent from the transport mechanism.
-
-Changing the transport should therefore not require redesigning the Task
-lifecycle.
-
----
-
-# 20. Task Status Queries
-
-The protocol provides:
+The C2 can actively request state through:
 
 ```text
 TASK_STATUS_QUERY
-TASK_STATUS
 ```
 
-These messages are particularly useful when the C2 is uncertain about the
-state of a Task.
-
-For example:
+Conceptually:
 
 ```text
 C2
@@ -804,12 +622,12 @@ C2
  ▼
 Agent
  │
- │ TASK_STATUS(T001, QUEUED)
+ │ TASK_STATUS(T001, RUNNING)
  ▼
 C2
 ```
 
-Possible returned states include:
+Possible reported states include:
 
 ```text
 QUEUED
@@ -819,104 +637,53 @@ FAILED
 UNKNOWN
 ```
 
-A completed status may include the corresponding `result_id`:
+`UNKNOWN` is useful when the Agent cannot establish the state of a Task.
+
+A completed status may include:
 
 ```text
-TASK_STATUS
-├── task_id = T001
-├── status = COMPLETED
-└── result_id = R001
+result_id = R001
 ```
 
-This allows the C2 to recover knowledge of a completed Task after losing a
-Result message.
+allowing the C2 to recover knowledge of the corresponding Result.
 
 ---
 
-# 21. Task Recovery After a Missing ACK
+# 16. Task Recovery
 
-The C2 must not blindly resend a Task when its acknowledgement is missing.
+Task recovery is required when the C2's knowledge of a Task becomes
+uncertain.
 
-For example:
+Typical causes include:
+
+- lost `TASK_ACK`;
+- lost `TASK_STATUS`;
+- lost Result;
+- communication interruption;
+- Agent restart;
+- C2 restart;
+- incomplete synchronization.
+
+The general recovery principle is:
 
 ```text
-TASK T001
-   ↓
-WAITING_ACK
-   ↓
-ACK timeout
+uncertainty
+    ↓
+obtain evidence
+    ↓
+reconcile Task state
+    ↓
+continue / finalize / redispatch
 ```
 
-The preferred recovery sequence is:
-
-```text
-WAITING_ACK
-      │
-      │ timeout
-      ▼
-     PING
-      │
- ┌────┴─────┐
- │          │
-PONG      no PONG
- │          │
- ▼          ▼
-Agent      agent
-reachable  unavailable / retry check
- │
- ▼
-TASK_STATUS_QUERY(T001)
-```
-
-`PING/PONG` answers:
-
-> Can the C2 communicate with the Agent right now?
-
-`TASK_STATUS_QUERY` answers:
-
-> What is the current state of this particular Task?
-
-These are deliberately different questions.
+Reconnection itself is outside this document and is defined in
+`reconnection-and-synchronization.md`.
 
 ---
 
-# 22. `PING/PONG` and Task Recovery
+# 17. Missing ACK Recovery
 
-The recovery logic is therefore:
-
-```text
-T001 = WAITING_ACK
-        │
-        │ ACK timeout
-        ▼
-      PING
-       /  \
-     PONG  no PONG
-      │       │
-      │       ▼
-      │   availability issue
-      │
-      ▼
-TASK_STATUS_QUERY(T001)
-      │
-      ▼
-┌──────────┬─────────┬───────────┬─────────┐
-│          │         │           │
-QUEUED   RUNNING  COMPLETED   UNKNOWN
-│          │         │           │
-└──────────┴─────────┘           │
-                                 ▼
-                         possible re-dispatch
-```
-
-Only after the Agent reports `UNKNOWN` should re-dispatch become a possible
-decision.
-
-The exact retry policy remains to be defined.
-
----
-
-# 23. Lost ACK Scenario
+A missing `TASK_ACK` must not automatically trigger Task redispatch.
 
 Example:
 
@@ -932,99 +699,140 @@ TASK_ACK
  ◄────────────── X lost
 ```
 
-The C2 still has:
+The C2 may still have:
 
 ```text
 T001 = WAITING_ACK
 ```
 
-After the acknowledgement deadline:
+After the acknowledgement deadline, the C2 should attempt to establish the
+actual Task state.
+
+A baseline recovery sequence is:
 
 ```text
-C2 → PING
+WAITING_ACK
+     │
+     │ acknowledgement timeout
+     ▼
+   PING
+     │
+     ▼
+   PONG
+     │
+     ▼
+TASK_STATUS_QUERY(T001)
+     │
+     ▼
+TASK_STATUS
 ```
+
+The result can indicate:
+
+```text
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+UNKNOWN
+```
+
+The exact liveness and retry procedure is defined across
+`protocol-state-transition.md` and `reconnection-and-synchronization.md`.
+
+---
+
+# 18. Missing Result Recovery
+
+A Result may be produced successfully while its transmission to the C2 fails.
+
+Example:
+
+```text
+T001
+ ↓
+RUNNING
+ ↓
+COMPLETED
+ ↓
+R001 produced
+ ↓
+communication failure
+```
+
+The Agent should retain the pending Result when the implementation supports
+offline recovery.
+
+After communication is restored, synchronization can identify:
+
+```text
+R001 = pending
+```
+
+and recover it.
+
+The Task must not be executed again merely because the Result was not received.
+
+The detailed reconciliation procedure belongs to
+`reconnection-and-synchronization.md`.
+
+---
+
+# 19. `UNKNOWN` Task State
+
+`UNKNOWN` is a **reported/recovery state**, rather than one of the persistent
+normal lifecycle states defined above.
+
+It means:
+
+> The Agent cannot currently establish the state of the requested Task.
+
+For example:
+
+```text
+C2:
+    T001 = WAITING_ACK
 
 Agent:
-
-```text
-Agent → PONG
+    T001 = UNKNOWN
 ```
 
-The C2 now knows the Agent is reachable.
-
-It then asks:
+The C2 must not interpret `UNKNOWN` as equivalent to:
 
 ```text
-C2 → TASK_STATUS_QUERY(T001)
+FAILED
 ```
 
-The Agent may respond:
+or:
 
 ```text
-TASK_STATUS
-task_id = T001
-status = QUEUED
+COMPLETED
 ```
 
-The C2 can therefore update its model without re-executing T001.
+Depending on the available evidence and retry policy, the C2 may:
+
+- query again;
+- reconcile after reconnection;
+- wait for additional evidence;
+- consider redispatch.
+
+Redispatch must be designed to avoid duplicate execution.
 
 ---
 
-# 24. Lost Result Scenario
+# 20. Duplicate Task Protection
 
-A Task may complete even if its result message is lost.
-
-```text
-TASK T001
-   ↓
-TASK_ACK
-   ↓
-RUNNING
-   ↓
-RESULT(T001)
-      X lost
-```
-
-The C2 may still believe:
-
-```text
-T001 = RUNNING
-```
-
-It can recover the state through:
-
-```text
-PING
- ↓
-PONG
- ↓
-TASK_STATUS_QUERY(T001)
- ↓
-TASK_STATUS(COMPLETED, R001)
-```
-
-The C2 now knows that the Task completed.
-
-This prevents unnecessary re-execution.
-
-The exact mechanism used to recover the missing Result data remains to be
-defined.
-
----
-
-# 25. Duplicate Task Handling
-
-Communication retries can cause the same logical Task or Message to appear
+Retries and reconnection can cause the same logical Task to be encountered
 more than once.
 
-The implementation must therefore distinguish:
+The implementation must distinguish:
 
 ```text
 task_id
-    → identity of the logical Task
+    → logical Task identity
 
 message_id
-    → identity of one protocol Message
+    → individual protocol message identity
 ```
 
 For example:
@@ -1032,100 +840,299 @@ For example:
 ```text
 TASK
 message_id = M100
-task_id = T001
+task_id    = T001
 ```
 
-If the same message is received twice:
+If the same protocol message is received again:
 
 ```text
-M100 TASK T001
-M100 TASK T001
+M100 / T001
+M100 / T001
 ```
 
-the Agent can detect that the same communication message was already
-processed.
+the Agent must not execute the logical Task twice merely because the message
+was duplicated.
 
-The Agent should maintain bounded recent history such as:
+Likewise, receiving the same logical `task_id` through a different message
+must not automatically create another logical Task.
+
+The Agent should maintain bounded recent identifiers such as:
 
 ```text
 recent_task_ids
 recent_message_ids
 ```
 
-This history should not grow indefinitely.
-
-The exact retention size remains an implementation decision.
+The retention policy remains an implementation decision.
 
 ---
 
-# 26. Why Blind Task Retransmission Is Avoided
+# 21. Why Blind Redispatch Is Avoided
 
 Consider:
 
 ```text
 C2 → TASK T001
-Agent → accepts and executes T001
+Agent → accepts T001
+Agent → begins execution
 Agent → TASK_ACK
           X lost
 ```
 
-If the C2 immediately sends T001 again:
+If the C2 assumes that the Task was never received and immediately sends it
+again:
 
 ```text
 C2 → TASK T001
 Agent → executes T001 again
 ```
 
-the same logical operation may be executed twice.
+the same logical operation may execute twice.
 
 Therefore:
 
-> **A missing acknowledgement is a communication uncertainty, not proof that
-> the Task was never received.**
+> **Missing acknowledgement is communication uncertainty, not proof that the
+> Task was not accepted.**
 
-The C2 should use liveness and task-status mechanisms before considering
-redispatch.
+The C2 should recover Task state before considering redispatch.
 
 ---
 
-# 27. Task Validation
+# 22. Task Queue
 
-Tasks received by the Agent must be validated before execution.
+The C2 manages Tasks independently for each Agent.
 
 Conceptually:
 
 ```text
-Received TASK
-      │
-      ▼
-Protocol Validation
-      │
-      ├── invalid → reject / ERROR
-      │
-      ▼
-Task handling
-      │
-      ▼
-Executor
-      │
-      ▼
-Command
+A001 → [T004, T005]
+A002 → [T006]
+A003 → []
 ```
 
-Validation requirements are specified more precisely in
-[`protocol.md`](protocol.md).
+The queue ensures that a Task intended for one Agent is not accidentally
+dispatched to another.
 
-Command-specific parameter validation should also occur at the appropriate
-command or execution boundary.
+On the Agent side, several accepted Tasks may also be maintained:
+
+```text
+A001
+ ├── T004 → RUNNING
+ ├── T005 → QUEUED
+ └── T006 → QUEUED
+```
+
+The exact scheduling policy, queue implementation, priorities, and concurrency
+limits remain to be defined.
 
 ---
 
-# 28. Message Routing and Task Lifecycle
+# 23. Asynchronous Multi-Agent Operation
 
-Incoming messages do not go directly to the Task Manager without first being
-classified.
+The Task system must not block the C2 on one Agent or one Task.
 
-The C2 uses a Message Router:
+The intended model is:
+
+```text
+Operator
+    │
+    ▼
+Create T001
+    │
+    ▼
+C2 continues managing other work
+    │
+    ├── A001 → T001
+    ├── A002 → T002
+    └── A003 → T003
+```
+
+An individual Task may remain:
+
+```text
+WAITING_ACK
+QUEUED
+RUNNING
+```
+
+while unrelated Tasks continue to be managed.
+
+The exact concurrency mechanism is an implementation concern.
+
+---
+
+# 24. Task and Agent Relationship
+
+Each Task is associated with one intended Agent:
+
+```text
+Agent A001
+ ├── T001
+ ├── T002
+ └── T003
+
+Agent A002
+ └── T004
+```
+
+The association is identified by:
+
+```text
+task.agent_id
+```
+
+A Task does not move between Agents as a consequence of reconnection.
+
+A reconnecting Agent creates a new Session while retaining the same
+`agent_id`.
+
+---
+
+# 25. Task and Session Relationship
+
+A Task is **not owned by a Session**.
+
+A Task belongs to an Agent and may span multiple Sessions.
+
+Example:
+
+```text
+Agent A001
+
+S041
+ │
+ └── T001 = RUNNING
+       │
+       │ communication loss
+       ▼
+S041 = DISCONNECTED
+
+S042
+ │
+ └── T001 = COMPLETED
+       │
+       └── R001 recovered
+```
+
+The Session records the communication episode through which Task-related
+messages were exchanged.
+
+It does not redefine the identity of the Task.
+
+---
+
+# 26. Task and Result Relationship
+
+A Task may produce a Result.
+
+```text
+T001
+  │
+  └── R001
+```
+
+The association is established through:
+
+```text
+result.task_id = task.task_id
+```
+
+The Result remains distinct from the Task:
+
+```text
+Task
+    → lifecycle and requested operation
+
+Result
+    → execution outcome/data
+```
+
+A Result may become available after the Task has completed locally but before
+the C2 receives it.
+
+---
+
+# 27. Cancellation
+
+Cancellation is an explicit lifecycle operation.
+
+Examples that may eventually be supported:
+
+```text
+PENDING  → CANCELLED
+QUEUED   → CANCELLED
+```
+
+Cancelling a `RUNNING` Task is more complex because safe interruption depends
+on the command being executed.
+
+The system must not assume that every command can be remotely interrupted.
+
+Cancellation semantics, including whether cancellation is best-effort or
+guaranteed, remain to be finalized.
+
+---
+
+# 28. Retry and Redispatch
+
+Retries must be distinguished from Task recreation.
+
+```text
+Communication retry
+    → attempt to recover communication or Task state
+
+Task redispatch
+    → request execution of the logical Task again
+```
+
+Communication recovery can use:
+
+```text
+PING / PONG
+TASK_STATUS_QUERY / TASK_STATUS
+```
+
+Redispatch is a separate decision and must consider duplicate-execution risk.
+
+The exact retry count, backoff, and redispatch policy remain open.
+
+---
+
+# 29. Task Validation
+
+Tasks received by the Agent must be validated before execution.
+
+```text
+TASK
+  │
+  ▼
+Protocol validation
+  │
+  ├── invalid → reject / ERROR
+  │
+  ▼
+Task handling
+  │
+  ▼
+Executor
+  │
+  ▼
+Command implementation
+```
+
+Validation is performed at appropriate layers:
+
+- protocol validation checks message structure and required fields;
+- Task handling checks Task-level constraints;
+- command implementation checks command-specific parameters.
+
+The protocol-level rules are defined in `protocol.md`.
+
+---
+
+# 30. Task Lifecycle and Message Routing
+
+Task-related messages are routed through the C2 Message Router.
 
 ```text
 Incoming Message
@@ -1135,155 +1142,32 @@ Message Router
        │
        ├── TASK_ACK
        │      ↓
-       │   TaskManager
+       │   Task Manager
        │
        ├── TASK_STATUS
        │      ↓
-       │   TaskManager
+       │   Task Manager
        │
-       ├── RESULT
-       │      ↓
-       │   ResultManager
-       │      ↓
-       │   TaskManager
-       │
-       ├── BEACON
-       │      ↓
-       │   AgentManager / SessionManager
-       │
-       └── PONG
+       └── RESULT
               ↓
-          Session / health handling
+          Result Manager
+              │
+              ▼
+          Task Manager
 ```
 
-This keeps communication routing separate from ownership of domain state.
+The Message Router is responsible for routing.
+
+The Task Manager remains responsible for Task state.
+
+This separation prevents protocol handling from becoming the owner of domain
+state.
 
 ---
 
-# 29. Failure and Recovery
+# 31. Persistence
 
-Relevant failure situations include:
-
-```text
-Agent unavailable
-Communication interrupted
-TASK_ACK not received
-TASK_STATUS not received
-Task timeout
-Invalid task
-Execution failure
-Malformed result
-Unexpected result
-Unknown task
-Duplicate task
-Duplicate result
-Lost result message
-```
-
-These cases must not all be treated as the same failure.
-
-The most important distinction is:
-
-```text
-Communication problem
-        ≠
-Execution failure
-```
-
-For example:
-
-```text
-WAITING_ACK → TIMEOUT
-```
-
-does not prove that execution failed.
-
-Whereas:
-
-```text
-RUNNING
-   ↓
-RESULT(FAILURE)
-   ↓
-FAILED
-```
-
-does.
-
----
-
-# 30. Cancellation
-
-Task cancellation is conceptually supported as a possible lifecycle operation.
-
-For example:
-
-```text
-PENDING
-   ↓
-CANCELLED
-```
-
-or:
-
-```text
-QUEUED
-   ↓
-CANCELLED
-```
-
-Whether a running Task can be safely interrupted remains to be defined.
-
-The project must not assume that every running operation can be remotely
-terminated until this behaviour is explicitly implemented and tested.
-
----
-
-# 31. Retry Behaviour
-
-Retries are not equivalent to task recreation.
-
-The system should distinguish:
-
-```text
-communication retry
-```
-
-from:
-
-```text
-task re-dispatch
-```
-
-A communication retry may involve checking availability:
-
-```text
-PING
-   ↓
-PONG
-```
-
-or querying state:
-
-```text
-TASK_STATUS_QUERY
-   ↓
-TASK_STATUS
-```
-
-A task re-dispatch must only be considered when the system has enough
-information to avoid unnecessary duplicate execution.
-
-The exact number of retries and retry policy remain open.
-
----
-
-# 32. Persistence
-
-The task system is expected to persist relevant Task information through the
-C2 storage layer.
-
-Conceptually:
+Relevant Task information is persisted through the C2 storage layer.
 
 ```text
 Task Manager
@@ -1295,7 +1179,7 @@ Database Interface
 SQLite
 ```
 
-Persistent task information may include:
+Potential persistent information includes:
 
 ```text
 task_id
@@ -1305,43 +1189,44 @@ parameters
 status
 timestamps
 deadlines
-result association
+result_id
+timeout_reason
 error
 ```
 
-The exact persistence rules for each lifecycle state remain to be defined.
+The exact persistence policy remains to be finalized.
 
 ---
 
-# 33. In-Memory and Persistent State
+# 32. Runtime vs Persistent State
 
-The C2 may maintain active Task information in memory for efficient runtime
-processing while persisting the authoritative Task history.
-
-Conceptually:
+The C2 may maintain active Task information in memory while persisting the
+authoritative Task record.
 
 ```text
-Runtime Task State
-      │
-      ├── active queue
-      ├── current status
-      └── timeout tracking
-      │
-      ▼
-Persistent Task Record
-      │
-      └── historical state
+Runtime
+├── active Tasks
+├── queue
+├── timeout tracking
+└── active execution metadata
+
+Persistent
+├── Task identity
+├── lifecycle state
+├── timestamps
+├── Result association
+└── historical information
 ```
 
-The exact synchronization strategy between in-memory and persistent state
-remains to be defined.
+The exact consistency mechanism between runtime and persistent state remains an
+implementation decision.
 
 ---
 
-# 34. Logging and Traceability
+# 33. Logging and Traceability
 
-Task-related events should be logged through the centralized logging
-component.
+Task-related lifecycle events should be recorded through the centralized
+logging/Event mechanisms.
 
 Examples include:
 
@@ -1354,91 +1239,22 @@ Task execution started
 Task status received
 Task completed
 Task failed
-Task timed out
+Task timeout
 Task cancellation
 TASK_STATUS_QUERY sent
 Result received
-Unmatched result detected
+Unmatched Result detected
+Task recovery initiated
 ```
 
-Logging should provide useful operational information without unnecessarily
-exposing sensitive data.
+Logging should provide sufficient information to reconstruct Task behaviour
+without unnecessarily exposing sensitive command parameters or Result data.
 
 ---
 
-# 35. Agent Runtime Information
+# 34. End-to-End Normal Flow
 
-The Agent should maintain enough lightweight runtime information to answer
-task-related queries and detect duplicates.
-
-Conceptually:
-
-```text
-Agent Runtime State
-├── agent_id
-├── current_task_id
-├── queued_task_ids
-├── last_task_id
-├── last_result_id
-├── last_message_id
-├── last_ack
-├── last_beacon
-└── recent task/message IDs
-```
-
-The recent history should remain bounded.
-
-The Agent does not need to retain an unlimited history in memory.
-
----
-
-# 36. Relationship with Agent Health
-
-Task recovery may depend on the Agent health state.
-
-The Agent maintains a separate health dimension:
-
-```text
-agent_status
-    UNKNOWN
-    ALIVE
-    LIKELY_DEAD
-    TERMINATED
-```
-
-while activity is represented separately:
-
-```text
-activity_state
-    IDLE
-    BUSY
-```
-
-This allows situations such as:
-
-```text
-Agent A001
-├── agent_status = ALIVE
-├── activity_state = BUSY
-└── current_task_id = T001
-```
-
-or:
-
-```text
-Agent A001
-├── agent_status = LIKELY_DEAD
-├── activity_state = UNKNOWN
-└── current_task_id = T001
-```
-
-The Agent health model is therefore not part of the Task state machine.
-
----
-
-# 37. Current End-to-End Task Flow
-
-The current normal flow can be summarized as:
+The normal lifecycle can be represented as:
 
 ```text
                   OPERATOR
@@ -1452,37 +1268,24 @@ The current normal flow can be summarized as:
                      ▼
                   PENDING
                      │
-                     │ dispatch
+                  dispatch
                      ▼
                 WAITING_ACK
                      │
-                     │ TASK
-                     ▼
-               PROTOCOL / TLS
-                     │
-                     ▼
-                   AGENT
-                     │
-                     │ TASK_ACK
+                  TASK_ACK
                      ▼
                   QUEUED
                      │
-                     │ start
+                  execution
                      ▼
                   RUNNING
                      │
-                     │ RESULT
-                     ▼
-               RESULT MANAGER
-                     │
-                     ▼
-               TASK MANAGER
-                     │
+                  RESULT
                      ▼
                  COMPLETED
 ```
 
-For an immediate task:
+With immediate execution:
 
 ```text
 PENDING
@@ -1494,206 +1297,160 @@ RUNNING
 COMPLETED
 ```
 
-For a delayed task:
+With execution failure:
 
 ```text
-PENDING
-   ↓
-WAITING_ACK
-   ↓
-QUEUED
-   ↓
 RUNNING
    ↓
-COMPLETED
-```
-
----
-
-# 38. Recovery Flow
-
-The current recovery model is:
-
-```text
-                     TASK
-                       │
-                       ▼
-                  WAITING_ACK
-                       │
-                  ACK timeout
-                       │
-                       ▼
-                     PING
-                    /    \
-                 PONG    no PONG
-                  │          │
-                  ▼          ▼
-        TASK_STATUS_QUERY   availability
-                  │          problem
-                  ▼
-       ┌──────────┼────────────┐
-       │          │            │
-    QUEUED     RUNNING      COMPLETED
-       │          │            │
-       └──────────┴────────────┘
-                    │
-                 continue
-```
-
-If the Agent reports:
-
-```text
-UNKNOWN
-```
-
-then re-dispatch may be considered according to the final retry policy.
-
----
-
-# 39. Current Design Summary
-
-The task architecture can be summarized as:
-
-```text
-Task
- │
- ├── created by C2
- │
- ├── PENDING
- │
- ├── WAITING_ACK
- │       │
- │       ├── timeout → recovery
- │       │
- │       └── TASK_ACK
- │
- ├── QUEUED
- │
- ├── RUNNING
- │       │
- │       ├── success → COMPLETED
- │       ├── failure → FAILED
- │       └── deadline → TIMEOUT
- │
- └── optional CANCELLED
-```
-
-The important protocol interactions are:
-
-```text
-TASK
-   ↓
-TASK_ACK
-   ↓
-TASK_STATUS
-   ↓
-RESULT
-```
-
-where `TASK_STATUS` may be queried when the C2 needs to recover from
-communication uncertainty.
-
-The health mechanisms are separate:
-
-```text
-BEACON
-    → normal periodic check-in
-
-PING/PONG
-    → immediate liveness check
-```
-
----
-
-# 40. Architectural Principles
-
-The following principles should remain stable as implementation progresses:
-
-### Task is a logical object
-
-A Task is not the same thing as the protocol message used to transport it.
-
-### One Task may produce several Messages
-
-```text
-T001
- ├── TASK
- ├── TASK_ACK
- ├── TASK_STATUS
- └── RESULT
-```
-
-### Task state is independent from Agent health
-
-```text
-Task state
-    ≠
-Agent status
-```
-
-### Communication failure is not execution failure
-
-```text
-TIMEOUT
-    ≠
 FAILED
 ```
 
-### Missing ACK does not imply missing execution
-
-The C2 should query Agent/task state before blindly redispatching.
-
-### `PING/PONG` and `BEACON` are complementary
+With a final timeout:
 
 ```text
-BEACON
-    → periodic agent check-in
-
-PING/PONG
-    → active immediate liveness check
+WAITING_ACK / RUNNING
+          ↓
+       TIMEOUT
 ```
-
-### `task_id` and `message_id` have different purposes
-
-```text
-task_id
-    → logical Task identity
-
-message_id
-    → individual protocol message identity
-```
-
-### Agent history remains bounded
-
-The Agent should retain only enough recent information for status queries and
-duplicate detection.
 
 ---
 
-# 41. Open Questions
+# 35. Task Recovery Flow
 
-The following points remain to be finalized:
+The essential recovery principle is:
 
-- exact timeout durations;
-- acknowledgement deadline policy;
-- execution deadline policy;
-- maximum number of communication retries;
-- exact re-dispatch rules after `UNKNOWN`;
-- whether `TASK_ACK` always leads directly to `QUEUED` or may lead directly to
-  `RUNNING`;
-- whether multiple Tasks may execute concurrently on a single Agent;
-- task scheduling and prioritization;
+```text
+             communication uncertainty
+                       │
+                       ▼
+                obtain evidence
+                       │
+              ┌────────┴────────┐
+              │                 │
+        status available    status unknown
+              │                 │
+              ▼                 ▼
+       update Task state    further recovery
+                                │
+                                ▼
+                         possible redispatch
+```
+
+A Task is not redispatched simply because a communication message was lost.
+
+Detailed reconnection and synchronization behaviour is defined in
+`reconnection-and-synchronization.md`.
+
+---
+
+# 36. Architectural Invariants
+
+The following rules should remain stable.
+
+### Task identity
+
+```text
+One logical Task → one task_id
+```
+
+### Agent ownership
+
+```text
+One Task → one intended Agent
+```
+
+### Session independence
+
+```text
+Task belongs to Agent, not Session
+```
+
+### Result association
+
+```text
+Result.task_id → corresponding Task
+```
+
+### Communication independence
+
+```text
+Communication failure ≠ execution failure
+```
+
+### Acknowledgement semantics
+
+```text
+TASK_ACK = acceptance
+TASK_ACK ≠ successful completion
+```
+
+### Status semantics
+
+```text
+TASK_STATUS = evidence of current/known Task state
+```
+
+### Duplicate protection
+
+```text
+Duplicate delivery must not cause duplicate logical execution.
+```
+
+### Recovery
+
+```text
+Uncertain Task state → recover evidence before redispatch where possible.
+```
+
+### Asynchronous operation
+
+```text
+One Task waiting/running must not block unrelated Tasks or Agents.
+```
+
+---
+
+# 37. Relationship to Other Documents
+
+| Document | Responsibility |
+|---|---|
+| `data-model.md` | Task entity, identifiers, relationships and persistence model |
+| `state-machines.md` | Authoritative Task states and state transitions |
+| `protocol.md` | Task-related protocol messages and fields |
+| `protocol-state-transition.md` | Mapping messages such as `TASK_ACK` and `TASK_STATUS` to state changes |
+| `reconnection-and-synchronization.md` | Reconnection, synchronization and cross-side reconciliation |
+| `file-transfer.md` | File-transfer lifecycle when a Task involves file exchange |
+| `testing-strategy.md` | Verification of Task lifecycle and recovery behaviour |
+| `DECISIONS.md` | Final architectural decisions that resolve current open questions |
+
+This document should not duplicate the full protocol specification,
+reconnection workflow, or general state-machine definitions.
+
+---
+
+# 38. Open Questions
+
+The following details remain to be finalized:
+
+- exact acknowledgement timeout;
+- exact execution timeout;
+- timeout handling policy;
+- retry count and backoff;
+- redispatch conditions after `UNKNOWN`;
+- whether `TASK_ACK` always leads to `QUEUED` or may directly precede `RUNNING`;
+- maximum concurrent Tasks per Agent;
+- Task scheduling and prioritization;
 - cancellation semantics;
+- whether running Tasks can be interrupted;
 - exact duplicate Task handling;
-- exact duplicate Message handling;
-- recent Task/Message history size;
-- result recovery after a lost Result;
-- persistence rules for each lifecycle state;
-- synchronization between in-memory and persistent Task state;
+- retention period/size for recent Task and Message identifiers;
 - exact `TASK_STATUS` contents;
-- whether every state change generates `TASK_STATUS` or only selected changes.
+- Result recovery mechanism;
+- persistence requirements for each Task state;
+- in-memory/persistent state consistency;
+- whether every Task transition generates an Event;
+- behaviour after Agent or C2 restart;
+- exact policy for Tasks that remain uncertain after repeated recovery attempts.
 
-When these decisions are finalized, the relevant architectural or project
-decisions should be recorded in [`DECISIONS.md`](../DECISIONS.md), and this
-document should remain synchronized with [`protocol.md`](protocol.md),
-[`data-model.md`](data-model.md), and [`testing-strategy.md`](testing-strategy.md).
+Once these decisions are finalized, the corresponding architectural choices
+should be recorded in `DECISIONS.md`.
