@@ -2,28 +2,19 @@
 
 > **Status: Work in Progress**
 >
-> This document describes the current conceptual data model of
-> C2-AUTOMATED. Entity fields, relationships, persistence rules, and
-> implementation details may evolve as the architecture and protocol are
-> finalized.
+> This document defines the current conceptual data model of C2-AUTOMATED.
+> Entity fields, relationships, persistence rules, and implementation details
+> may evolve as the architecture and protocol are finalized.
 >
-> The model intentionally separates **domain entities**, **communication
-> sessions**, **transport connections**, **protocol messages**, **operational
-> events**, and **physical storage**.
+> The model separates **domain entities**, **communication Sessions**,
+> **transport Connections**, **protocol Messages**, **operational Events**,
+> and **physical storage**.
 
 ---
 
-# 1. Purpose
+# 1. Purpose and Scope
 
-C2-AUTOMATED uses several central entities to represent agents,
-communication sessions, tasks, results, messages, file transfers, and
-operational events.
-
-The purpose of this document is to define the **conceptual relationships**
-between these entities before the final implementation and database schema
-are established.
-
-The current primary entities are:
+The current primary domain entities are:
 
 ```text
 Agent
@@ -35,15 +26,10 @@ File Transfer
 Event
 ```
 
-A transport connection is also distinguished conceptually because it is the
-actual network-level communication mechanism, but it is not treated as the
-persistent identity of either an Agent or a Session.
+A transport `Connection` is also represented conceptually because it is the
+actual network communication mechanism.
 
-These entities exist at the application level. Their exact representation in
-Python classes, database models, protocol structures, or runtime objects may
-differ.
-
-A key architectural principle is:
+The main distinction is:
 
 ```text
 Agent
@@ -53,7 +39,7 @@ Session
     → one communication episode
 
 Connection
-    → actual transport connection
+    → transport-level communication
 
 Task
     → logical operation requested for an Agent
@@ -62,7 +48,7 @@ Result
     → outcome produced by a Task
 
 Message
-    → protocol-level communication unit
+    → protocol communication unit
 
 File Transfer
     → logical file movement
@@ -71,72 +57,56 @@ Event
     → operational occurrence
 ```
 
+These are conceptual objects. Their final Python, protocol, runtime, and
+database representations may differ.
+
 ---
 
 # 2. Domain Overview
 
-The current conceptual model can be summarized as:
+The ownership relationships are:
 
 ```text
-                         ┌────────────┐
-                         │   Agent    │
-                         └─────┬──────┘
-                               │
-                    ┌──────────┴──────────┐
-                    │                     │
-                    ▼                     ▼
-              ┌───────────┐        ┌───────────┐
-              │  Session  │        │    Task   │
-              └───────────┘        └─────┬─────┘
-                                         │
-                                         ▼
-                                   ┌───────────┐
-                                   │  Result   │
-                                   └───────────┘
-
-                         Agent
+                    ┌─────────────┐
+                    │    Agent    │
+                    └──────┬──────┘
+                           │
+               ┌───────────┼───────────┐
+               │           │           │
+               ▼           ▼           ▼
+          ┌─────────┐ ┌─────────┐ ┌─────────────┐
+          │ Session │ │  Task   │ │File Transfer│
+          └─────────┘ └────┬────┘ └─────────────┘
                            │
                            ▼
-                    ┌─────────────┐
-                    │File Transfer│
-                    └─────────────┘
+                      ┌─────────┐
+                      │ Result  │
+                      └─────────┘
 ```
 
-Operational events are associated with system activity:
+Messages and Events are cross-cutting:
 
 ```text
-Agent / Session / Task / Result / File Transfer
-                         │
-                         ▼
-                       Event
-```
-
-Protocol messages transport information related to these entities:
-
-```text
-Application Entity / Event
-          │
-          ▼
-   Protocol Message
-          │
-          ▼
+Entities
+   │
+   ├──► Events
+   │
+   └──► Messages
+           │
+           ▼
        Transport
-          │
-          ▼
-      Network
 ```
 
-A message is therefore **not equivalent to the domain object it represents**.
+A Message is therefore not the same object as the Task, Result, or Event it
+references.
 
 ---
 
 # 3. Agent
 
-An **Agent** represents the persistent identity of an endpoint running the
-agent software.
+An **Agent** represents the persistent identity of an endpoint.
 
-The Agent identity survives across communication sessions and transport
-connections.
+Its identity survives across Sessions and transport Connections.
 
 Conceptually:
 
@@ -176,190 +146,127 @@ Agent
 
 The exact persistent schema remains to be finalized.
 
----
+## 3.1 Identity
 
-## 3.1 Agent Identity
+`agent_id` uniquely identifies an Agent from the C2 perspective.
 
-`agent_id` uniquely identifies the Agent from the C2 server's perspective.
-
-The identity mechanism itself has not yet been finalized.
-
-The identity must remain independent from:
+It is independent from:
 
 ```text
 session_id
-message_id
 task_id
+result_id
+message_id
+transfer_id
+event_id
 ```
 
-A new communication session therefore does not create a new logical Agent.
+A new Session therefore does not create a new Agent.
 
----
+## 3.2 Health
 
-## 3.2 Agent Health State
+The current health states are:
 
-The current conceptual health model is:
+```text
+UNKNOWN
+ALIVE
+LIKELY_UNREACHABLE
+TERMINATED
+```
+
+Normal liveness may follow:
 
 ```text
 UNKNOWN
    │
-   │ REGISTER
+   │ valid REGISTER
    ▼
- ALIVE
+ALIVE
    │
    │ insufficient expected communication
    ▼
 LIKELY_UNREACHABLE
    │
-   │ communication resumes
+   │ valid communication resumes
    ▼
- ALIVE
-```
-
-An explicitly confirmed termination may instead produce:
-
-```text
 ALIVE
-   │
-   │ explicit termination
-   ▼
-TERMINATED
 ```
 
-The states are interpreted as:
+`TERMINATED` is reserved for explicit or otherwise confirmed termination.
+Communication loss alone must not imply termination.
 
-### `UNKNOWN`
+## 3.3 Activity
 
-The C2 does not yet have sufficient information to establish the current
-health of the Agent.
-
-### `ALIVE`
-
-The C2 has recent evidence that the Agent is communicating or has recently
-responded.
-
-### `LIKELY_UNREACHABLE`
-
-The Agent has failed to communicate within the expected conditions and is
-considered likely unavailable.
-
-This is deliberately not equivalent to confirmed process or host
-termination.
-
-### `TERMINATED`
-
-Where supported, this represents an explicitly confirmed termination of the
-Agent.
-
-It must not be inferred solely from communication loss.
-
----
-
-## 3.3 Agent Activity State
-
-Agent health and Agent activity are distinct concepts.
-
-The current activity model is:
+The activity states are:
 
 ```text
 IDLE
 BUSY
 ```
 
-For example:
+`RUNNING` belongs to the Task state machine.
+
+A valid combination is:
 
 ```text
-Agent health:       ALIVE
-Activity state:     BUSY
-Current task:       T001
+Agent health = ALIVE
+Activity     = BUSY
+
+T001 = RUNNING
+T002 = QUEUED
 ```
 
-`RUNNING` belongs to the **Task** state machine, not the Agent activity
-model.
+## 3.4 Communication State
 
-This allows the system to represent:
-
-```text
-Agent = ALIVE
-Activity = BUSY
-
-Task T001 = RUNNING
-Task T002 = QUEUED
-Task T003 = QUEUED
-```
-
----
-
-## 3.4 Agent Communication State
-
-The Agent has a separate communication mode describing its ability to
-communicate reliably with the C2.
-
-The current conceptual model is:
+The Agent communication states are:
 
 ```text
 CONNECTING
-     │
-     ▼
- CONNECTED
-     │
-     │ communication failure
-     ▼
- DEGRADED
-   /      \
-recovery   repeated failure
-  │             │
-  ▼             ▼
+CONNECTED
+DEGRADED
+OFFLINE_WAIT
+SYNCHRONIZING
+```
+
+The general path is:
+
+```text
+CONNECTING
+    │
+    ▼
+CONNECTED
+    │
+    │ communication failure
+    ▼
+DEGRADED
+   /    \
+  /      \
+recovery  failure threshold reached
+ │             │
+ ▼             ▼
 CONNECTED   OFFLINE_WAIT
                 │
-                │ reconnect attempt
+                │ reconnect
                 ▼
             CONNECTING
+                │
+                ▼
+          SYNCHRONIZING
+                │
+                ▼
+            CONNECTED
 ```
 
-A separate synchronization phase occurs after a new connection is
-established:
+Communication state is independent from Agent health, activity, Session
+state, and Task state.
 
-```text
-CONNECTING
-    │
-    ▼
-SYNCHRONIZING
-    │
-    ▼
- CONNECTED
-```
+## 3.5 Runtime Information
 
-The communication state is therefore independent from:
-
-```text
-Agent health
-Agent activity
-Session state
-Task state
-```
-
-For example:
-
-```text
-Agent health       = ALIVE
-Activity           = BUSY
-Communication      = DEGRADED
-Session            = DISCONNECTED
-Task T001          = RUNNING
-```
-
-These values are not contradictory because they represent different
-dimensions of system state.
-
----
-
-## 3.5 Agent Runtime Information
-
-The Agent may maintain lightweight runtime information such as:
+The Agent may keep lightweight state such as:
 
 ```text
 agent_id
+
 communication_state
 last_c2_contact
 last_beacon_ack
@@ -374,79 +281,31 @@ recent_task_ids
 recent_message_ids
 ```
 
-Recent identifiers should be bounded rather than retained indefinitely in
-memory.
+Recent identifier history should be bounded.
 
-This state is useful for:
-
-- task deduplication;
-- message deduplication;
-- task recovery;
-- offline result retention;
-- tracking the currently executing operation;
-- responding to status queries;
-- synchronization after reconnection.
-
-The Agent should maintain only the runtime information required for
-continuity and recovery. The C2 maintains the complete historical record.
+The Agent keeps the information required for continuity and recovery; the C2
+maintains the complete historical record.
 
 ---
 
 # 4. Session
 
-A **Session** represents one logical communication episode between a
-specific Agent and the C2 through a transport.
+A **Session** is one logical communication episode for an Agent.
 
-The architectural distinction is:
+A Session is distinct from:
 
 ```text
 Agent
-    → persistent identity
+→ persistent identity
 
 Session
-    → one communication episode
+→ communication episode
 
 Connection
-    → actual transport connection
+→ transport connection
 ```
 
-For example:
-
-```text
-Agent A001
-   │
-   ├── Session S041
-   │      10:00 → 10:45
-   │      DISCONNECTED
-   │
-   ├── Session S042
-   │      11:10 → 12:30
-   │      CLOSED
-   │
-   └── Session S043
-          13:05 → current
-          CONNECTED
-```
-
-The Agent identity survives across all of these Sessions.
-
----
-
-## 4.1 Session Information
-
-A Session may contain information such as:
-
-```text
-session_id
-agent_id
-session_status
-transport
-created_at
-ended_at?
-connection metadata
-```
-
-The current conceptual Session states are:
+## 4.1 Session States
 
 ```text
 CONNECTING
@@ -454,114 +313,36 @@ CONNECTING
      ▼
  CONNECTED
    /     \
-  /       \
- ▼         ▼
+  ▼       ▼
 DISCONNECTED  CLOSED
 ```
 
-These states have different meanings:
+| State | Meaning |
+|---|---|
+| `CONNECTING` | Session establishment is in progress |
+| `CONNECTED` | Communication for this Session is active |
+| `DISCONNECTED` | The Session's connection has been lost |
+| `CLOSED` | The Session has been deliberately or orderly ended |
 
-### `CONNECTING`
+`DISCONNECTED` and `CLOSED` are terminal states for that Session.
 
-The Session is being established.
+The Session record remains available for history.
 
-### `CONNECTED`
+## 4.2 New Connection Rule
 
-The Session is actively associated with a functioning communication
-connection.
+> **Every new successful transport Connection creates a new Session. A previous Session is never revived.**
 
-### `DISCONNECTED`
-
-The connection associated with the Session is no longer available.
-
-The Session record remains known to the C2 and is not deleted merely because
-communication was lost.
-
-### `CLOSED`
-
-The Session's lifecycle has been deliberately or orderly ended, such as
-through explicit termination or clean application shutdown.
-
-For a given Session, `DISCONNECTED` and `CLOSED` are terminal states.
-
-A later reconnection creates a **new Session** instead of returning the old
-Session to `CONNECTED`.
-
----
-
-## 4.2 Session and Agent Relationship
-
-Conceptually:
+Example:
 
 ```text
-One Agent
-    │
-    ├── Session S041
-    ├── Session S042
-    ├── Session S043
-    └── ...
+Agent A001
+   │
+   ├── S041 → CLOSED
+   ├── S042 → DISCONNECTED
+   └── S043 → CONNECTED
 ```
 
-The cardinality is:
-
-```text
-Agent 1 ─── * Session
-```
-
-A Session does not replace or redefine the persistent identity of the Agent.
-
----
-
-## 4.3 Session and Connection
-
-A Session is distinct from the underlying network connection.
-
-Conceptually:
-
-```text
-Agent
-  │
-  ▼
-Session
-  │
-  ▼
-TCP/TLS Connection
-  │
-  ▼
-Network
-```
-
-For the initial implementation, one Session corresponds to one connection
-episode.
-
-When that connection disappears:
-
-```text
-S042
-CONNECTED
-   ↓
-DISCONNECTED
-```
-
-If the Agent later establishes a new connection:
-
-```text
-new connection
-      ↓
-S043 created
-      ↓
-S043 = CONNECTED
-```
-
-The old Session is not revived.
-
----
-
-## 4.4 Session and Reconnection
-
-A new successful connection to the C2 creates a new Session.
-
-For example:
+The transition is therefore:
 
 ```text
 S042 = DISCONNECTED
@@ -571,52 +352,55 @@ S042 = DISCONNECTED
 S043 = CONNECTED
 ```
 
-The persistent Agent remains:
+never:
 
 ```text
-A001
+S042 = DISCONNECTED
+        │
+        │ reconnect
+        ▼
+S042 = CONNECTED
 ```
 
-This rule applies even if the Agent reports:
+A `previous_session_id` in `REGISTER` is historical context only.
+
+## 4.3 Agent Relationship
+
+One Agent may have many Sessions:
 
 ```text
-previous_session_id = S042
+Agent A001
+   ├── S041
+   ├── S042
+   ├── S043
+   └── ...
 ```
 
-Such a value is historical context and does not request that S042 be reopened.
+```text
+Agent 1 ─── * Session
+```
+
+The C2 may maintain:
+
+```text
+active_session_id?
+last_session_id
+```
+
+When no Session is active:
+
+```text
+active_session_id = null
+last_session_id   = S043
+```
+
+A later connection can then create S044 without modifying S043.
 
 ---
 
-## 4.5 Session and Agent State
+# 5. Liveness
 
-Session status and Agent health remain independent.
-
-For example:
-
-```text
-Agent health          = ALIVE
-Communication state   = OFFLINE_WAIT
-Active session        = none
-Last session          = S042
-```
-
-Another valid situation is:
-
-```text
-Agent health          = ALIVE
-Communication state   = CONNECTED
-Active session        = S043
-```
-
-A disconnected Session therefore does not imply that the Agent itself has
-been terminated.
-
----
-
-# 5. Liveness and Communication Information
-
-The model distinguishes routine communication from active communication
-testing.
+Liveness mechanisms are distinct from Session lifecycle.
 
 ## 5.1 Beacon
 
@@ -634,7 +418,7 @@ Agent
 Agent
 ```
 
-A Beacon may carry lightweight operational information such as:
+A Beacon may report lightweight operational information such as:
 
 ```text
 activity_state
@@ -644,32 +428,11 @@ last_task_id?
 last_result_id?
 ```
 
-The exact payload remains subject to protocol specification.
-
-The C2 may update:
-
-```text
-last_seen
-last_beacon
-Agent activity
-current task
-session activity
-```
-
-The Agent records the corresponding acknowledgement information, such as:
-
-```text
-last_beacon_ack
-last_c2_contact
-```
-
-A Beacon does not create a Task.
-
----
+The C2 may update `last_seen`, `last_beacon`, and related runtime information.
 
 ## 5.2 Ping / Pong
 
-`PING/PONG` is an active liveness mechanism:
+`PING/PONG` provides an active immediate connectivity check:
 
 ```text
 C2
@@ -683,31 +446,25 @@ Agent
 C2
 ```
 
-Its purpose is:
-
-> Verify that communication with the Agent succeeds at that moment.
-
-A `PONG` is therefore evidence of immediate responsiveness.
-
-It does **not** by itself synchronize Task or Result state.
-
-This differs from the Beacon mechanism:
+The distinction is:
 
 ```text
 BEACON / BEACON_ACK
-→ normal periodic communication cycle
+→ routine periodic communication
 
 PING / PONG
-→ active immediate connectivity test
+→ immediate connectivity verification
 ```
+
+A `PONG` does not itself reconcile Task or Result state.
 
 ---
 
 # 6. Task
 
-A **Task** represents one logical operation requested for a specific Agent.
+A **Task** represents one logical operation requested for an Agent.
 
-A Task belongs to the Agent, not to a Session.
+A Task belongs to an Agent, not to a Session.
 
 Conceptually:
 
@@ -718,16 +475,13 @@ Task
 ├── command_type
 ├── parameters
 ├── status
-│
 ├── created_at
 ├── dispatched_at
 ├── acknowledged_at
 ├── started_at
 ├── completed_at
-│
 ├── created_session_id?
 ├── last_session_id?
-│
 ├── ack_deadline
 ├── execution_deadline
 ├── timeout_reason?
@@ -735,22 +489,10 @@ Task
 └── error?
 ```
 
-The detailed lifecycle is documented in
+The detailed lifecycle is defined in
 [`task-lifecycle.md`](task-lifecycle.md).
 
----
-
-## 6.1 Task Ownership
-
-A Task belongs logically to one Agent:
-
-```text
-Agent A001
-   │
-   ├── Task T001
-   ├── Task T002
-   └── Task T003
-```
+## 6.1 Task Ownership and Sessions
 
 The relationship is:
 
@@ -758,63 +500,35 @@ The relationship is:
 Agent 1 ─── * Task
 ```
 
-A Task is **not owned by a Session**.
+`created_session_id` and `last_session_id`, where used, record communication
+history only.
 
-`created_session_id` and `last_session_id`, where retained, are historical
-and communication-context metadata.
-
----
-
-## 6.2 Task Can Span Sessions
-
-A Task may be created, executed, and completed across different Sessions.
-
-For example:
+A Task may therefore span Sessions:
 
 ```text
 T002
-│
-├── created during S042
-├── queued during S042
-├── Agent disconnected
-├── remains queued during OFFLINE_WAIT
-├── Agent reconnects through S043
-└── executed through S043
+ │
+ ├── created through S042
+ ├── remains queued after S042 disconnects
+ └── executed through S043
 ```
 
-Another example:
+Another valid case is:
 
 ```text
 T001
-│
-├── created during S042
-├── execution starts during S042
-├── communication lost
-├── execution completes while offline
-├── Result R001 stored locally
-└── R001 transmitted during S043
+ │
+ ├── RUNNING through S042
+ ├── completes while disconnected
+ ├── R001 retained locally
+ └── R001 transmitted through S043
 ```
 
-Both are valid.
-
-Therefore:
-
-```text
-Task identity
-    ≠
-Session identity
-```
-
----
-
-## 6.3 Task State
-
-The current conceptual Task states are:
+## 6.2 Task States
 
 ```text
 PENDING
    │
-   │ dispatch
    ▼
 WAITING_ACK
    │
@@ -822,23 +536,22 @@ WAITING_ACK
    ▼
 QUEUED
    │
-   │ TASK_STATUS(RUNNING)
+   │ execution starts
    ▼
 RUNNING
   /    \
- /      \
-▼        ▼
+ ▼      ▼
 COMPLETED  FAILED
 ```
 
-Additional outcomes are:
+Additional final states are:
 
 ```text
 TIMEOUT
 CANCELLED
 ```
 
-The complete set is:
+Complete set:
 
 ```text
 PENDING
@@ -851,102 +564,46 @@ TIMEOUT
 CANCELLED
 ```
 
-These states are independent from Agent, communication, and Session state.
+## 6.3 Task Acknowledgement and Recovery
 
----
-
-## 6.4 `TASK_ACK`
-
-`TASK_ACK` means:
-
-> The Agent has received, validated, and accepted the Task for execution or
-> queuing.
+`TASK_ACK` means that the Agent has received, validated, and accepted the
+Task for execution or queuing.
 
 Therefore:
 
 ```text
 WAITING_ACK
       │
-      │ TASK_ACK
       ▼
    QUEUED
 ```
 
-If the Agent can immediately execute the Task, it may proceed rapidly from
-`QUEUED` to `RUNNING`.
+A missing ACK does not prove Task failure.
 
-The preferred explicit mechanism for notifying the C2 that execution has
-actually begun is:
+Recovery is:
 
 ```text
-TASK_STATUS(RUNNING)
+ACK timeout
+     ↓
+   PING
+     ↓
+   PONG
+     ↓
+TASK_STATUS_QUERY
+     ↓
+TASK_STATUS
 ```
 
----
+The C2 must not blindly retransmit a Task after an uncertain ACK.
 
-## 6.5 Communication Uncertainty
-
-Failure to receive a Task acknowledgement does not automatically mean that
-Task execution failed.
-
-The model distinguishes:
-
-```text
-communication failure
-        ≠
-task execution failure
-```
-
-For example:
-
-```text
-TASK T001
-    ↓
-WAITING_ACK
-    ↓
-ACK lost
-```
-
-The C2 must not blindly retransmit the Task because the Agent may already
-have accepted it.
-
-The recovery process is:
-
-```text
-WAITING_ACK
-      │
-      │ timeout
-      ▼
-    PING
-      │
-      ▼
-    PONG
-      │
-      ▼
-TASK_STATUS_QUERY(T001)
-      │
-      ▼
-TASK_STATUS(...)
-```
-
-Possible results include:
-
-```text
-QUEUED
-RUNNING
-COMPLETED
-FAILED
-UNKNOWN
-```
-
-A redispatch may be considered only when the Agent confirms that the Task is
-`UNKNOWN`, subject to the final retry policy.
+Redispatch may be considered after confirmation that the Agent considers the
+Task `UNKNOWN`, subject to retry and duplicate-protection rules.
 
 ---
 
 # 7. Result
 
-A **Result** represents the outcome or data produced by a Task.
+A **Result** represents data or an outcome produced by a Task.
 
 Conceptually:
 
@@ -961,121 +618,59 @@ Result
 └── data
 ```
 
-A Result belongs logically to the Task that produced it.
-
-```text
-Agent
-  │
-  └── Task T001
-        │
-        └── Result R001
-```
-
-The relationship remains conceptually:
-
-```text
-Task 1 ─── 0..1 / *
-```
-
-depending on the final execution/result model.
-
----
-
-## 7.1 Result and Session
-
-A Result may be associated with the Session through which it is transmitted
-to the C2.
-
-For example:
-
-```text
-T001
-created in S042
-
-R001
-produced while disconnected
-received through S043
-```
-
-There is therefore no requirement for:
-
-```text
-Task.session_id == Result.session_id
-```
-
-The Session is communication context, not Result ownership.
-
----
-
-## 7.2 Result Identification
-
-`result_id` identifies a specific Result independently from:
-
-```text
-task_id
-message_id
-session_id
-agent_id
-```
-
-This permits the C2 to detect a retransmitted Result without creating a
-second logical Result.
-
----
-
-## 7.3 Result and Task Recovery
-
-If an Agent completes a Task while the C2 is unreachable:
+A Result belongs logically to its Task.
 
 ```text
 Task T001
-      ↓
-completed locally
-      ↓
-Result R001
-      ↓
-local pending-results
+   └── Result R001
 ```
 
-The Result is retained until communication becomes available again.
+The Task → Result cardinality remains `1 → 0..1 / *` until the execution
+model is finalized.
 
-After reconnection:
+## 7.1 Cross-Session Results
+
+The Session recorded with a Result identifies the communication context in
+which the Result was received.
+
+Example:
 
 ```text
-new Session
-      ↓
-synchronization
-      ↓
-pending Result transmitted
-      ↓
-C2 stores R001
+T001
+ │
+ ├── execution through S042
+ ├── S042 disconnects
+ ├── R001 produced locally
+ └── R001 transmitted through S043
 ```
 
-The Result therefore survives communication interruptions.
+A lost Result must not cause the Task to be executed again.
 
----
-
-## 7.4 Unmatched Results
-
-If the C2 receives a Result referencing an unknown Task, it should not invent
-a Task to satisfy the relationship.
-
-The Result should instead be treated as:
+The C2 can instead recover the state with:
 
 ```text
-unmatched / unexpected result
+TASK_STATUS_QUERY
+       ↓
+TASK_STATUS(COMPLETED, R001)
 ```
 
-and handled according to the final validation and logging rules.
+## 7.2 Result Deduplication
+
+`result_id` uniquely identifies the logical Result.
+
+A retransmitted Result therefore remains the same Result and must not create a
+second logical record.
+
+An unknown referenced Task must not be silently invented; the Result should
+instead be treated as unmatched/unexpected.
 
 ---
 
 # 8. Message
 
-A **Message** represents a protocol-level communication unit exchanged
-between the C2 and Agent.
+A **Message** is one protocol-level communication unit.
 
-A conceptual message envelope is:
+Conceptually:
 
 ```text
 Message
@@ -1091,18 +686,11 @@ Message
 └── payload
 ```
 
-Not every field is mandatory for every message.
+The exact wire format is defined in [`protocol.md`](protocol.md).
 
-The exact wire representation is defined separately in
-[`protocol.md`](protocol.md).
+## 8.1 Identifier and Correlation
 
----
-
-## 8.1 Message Identity
-
-`message_id` identifies one specific protocol message.
-
-It must not be confused with the logical Task or Result.
+`message_id` identifies the protocol Message.
 
 For example:
 
@@ -1114,58 +702,27 @@ T001
  └── M103 RESULT
 ```
 
-Therefore:
+A Message may concern a Task created through an earlier Session:
 
 ```text
-task_id
-→ identifies logical work
-
-message_id
-→ identifies one protocol communication
-```
-
-This distinction supports tracing, deduplication, and recovery.
-
----
-
-## 8.2 Cross-Session Messages
-
-A message may concern a Task that was created or previously communicated
-through another Session.
-
-For example:
-
-```text
-Task T002
-created during S042
+T002 created through S042
         │
         ▼
-new Session S043
+S042 disconnects
         │
         ▼
-TASK_ACK(T002)
+S043 established
+        │
+        └── Message concerning T002
 ```
 
-This is valid provided that:
+The Message's `session_id` records the communication context.
 
-```text
-Agent identity is valid
-Session belongs to Agent
-Task belongs to Agent
-state transition is valid
-message is not a duplicate
-```
+It does not redefine Task ownership.
 
-The message's `session_id` identifies **where the communication happened**,
-not the Task's ownership.
+## 8.2 Message Router
 
----
-
-## 8.3 Message Router
-
-Incoming Messages are routed by the C2's **Message Router**.
-
-Conceptually:
+The C2's Message Router dispatches Messages to the appropriate subsystem:
 
 ```text
 MESSAGE
@@ -1173,184 +730,83 @@ MESSAGE
    ▼
 Message Router
    │
-   ├── REGISTER
-   │       ▼
-   │   Agent Manager
-   │
-   ├── BEACON
-   │       ▼
-   │   Agent / Session management
-   │
-   ├── TASK_ACK
-   │       ▼
-   │   Task Manager
-   │
-   ├── TASK_STATUS
-   │       ▼
-   │   Task Manager
-   │
-   ├── RESULT
-   │       ▼
-   │   Result Manager
-   │
-   ├── SYNC_STATE
-   │       ▼
-   │   Synchronization Manager
-   │
-   └── FILE_*
-           ▼
-       File Manager
+   ├── REGISTER ───────────► Agent Manager
+   ├── BEACON ─────────────► Agent / Session handling
+   ├── TASK_ACK ───────────► Task Manager
+   ├── TASK_STATUS ────────► Task Manager
+   ├── RESULT ─────────────► Result Manager
+   ├── SYNC_STATE ─────────► Synchronization Manager
+   └── FILE_* ─────────────► File Manager
 ```
 
-The Message Router is responsible for determining where a Message should be
-handled.
-
-It does **not** own the lifecycle state of Agents, Sessions, Tasks, Results,
-or File Transfers.
+The Router does not own domain state.
 
 ---
 
-# 9. Message Correlation
+# 9. Identifiers
 
-The model explicitly distinguishes the main correlation identifiers:
+The identifiers have distinct meanings:
 
 | Identifier | Meaning |
 |---|---|
-| `agent_id` | identifies the Agent |
-| `session_id` | identifies the communication Session |
-| `task_id` | identifies the logical Task |
-| `result_id` | identifies the Result |
-| `transfer_id` | identifies the File Transfer |
-| `message_id` | identifies the protocol Message |
-| `event_id` | identifies an operational Event |
+| `agent_id` | persistent Agent identity |
+| `session_id` | one communication Session |
+| `task_id` | one logical Task |
+| `result_id` | one Result |
+| `transfer_id` | one File Transfer |
+| `message_id` | one protocol Message |
+| `event_id` | one Event |
 
-Conceptually:
+They must not be conflated:
 
 ```text
-agent_id
-→ WHO
-
-session_id
-→ WHICH communication episode
-
-task_id
-→ WHICH logical operation
-
-result_id
-→ WHICH result
-
-transfer_id
-→ WHICH file transfer
-
-message_id
-→ WHICH protocol message
+agent_id    ≠ session_id
+task_id     ≠ message_id
+result_id   ≠ task_id
+transfer_id ≠ message_id
 ```
 
-This separation is fundamental to cross-session recovery.
+This allows one Task to span multiple Sessions and Messages:
+
+```text
+T001
+ │
+ ├── M100 / S042
+ ├── M101 / S042
+ │
+ ├── communication loss
+ │
+ ├── M102 / S043
+ └── M103 / S043
+```
 
 ---
 
-# 10. Protocol Messages and Domain State
+# 10. Synchronization
 
-The conceptual relationship between protocol Messages and domain state is:
+Synchronization reconciles Agent and C2 state after communication recovery.
 
-```text
-Protocol Message
-       │
-       ▼
-Message Router
-       │
-       ▼
-Domain Manager
-       │
-       ▼
-Domain State Update
-```
+It takes place through a **new Session**.
 
-Examples:
+The sequence is:
 
 ```text
-REGISTER
-   → establish Agent identity
-   → create new Session
-
-REGISTER_ACK
-   → communicate new Session ID to Agent
-
-BEACON
-   → update periodic liveness/activity information
-
-BEACON_ACK
-   → confirm Beacon reception
-
-PING
-   → initiate immediate liveness check
-
-PONG
-   → provide immediate communication evidence
-
-TASK_ACK
-   → WAITING_ACK → QUEUED
-
-TASK_STATUS(RUNNING)
-   → QUEUED → RUNNING
-
-TASK_STATUS(...)
-   → reconcile Task state
-
-RESULT
-   → store Result
-   → update Task
-
-SYNC_STATE
-   → provide Agent-side recovery state
-
-SYNC_STATE_RESPONSE
-   → provide C2 reconciliation decisions
-
-SYNC_COMPLETE
-   → terminate synchronization phase
-```
-
-The exact routing implementation remains an implementation concern.
-
----
-
-# 11. Synchronization State
-
-Synchronization is a protocol phase associated with a **new Session**.
-
-It does not revive a previous Session.
-
-Conceptually:
-
-```text
-Old Session
-    ↓
-DISCONNECTED / CLOSED
-    ↓
 new connection
-    ↓
-NEW Session
-    ↓
+      ↓
+new Session
+      ↓
 SYNCHRONIZING
+      ↓
+state reconciliation
+      ↓
+SYNC_COMPLETE
+      ↓
+normal operation
 ```
 
-The purpose is to reconcile:
+## 10.1 Reconnection Protocol
 
-```text
-Agent state
-    ↕
-C2 state
-```
-
-after a period of communication loss.
-
----
-
-## 11.1 Reconnection Sequence
-
-For a returning Agent:
+A returning Agent may provide the previous Session for context:
 
 ```text
 Agent                                C2
@@ -1373,28 +829,25 @@ session_id = S043
 SYNC_STATE
 ────────────────────────────────────────►
 
-                            reconcile state
+                            reconcile
 
 SYNC_STATE_RESPONSE
 ◄────────────────────────────────────────
 
 SYNC_COMPLETE
 ◄────────────────────────────────────────
-
-normal operation
 ```
 
-The exact synchronization payload remains defined by the protocol
-specification.
+The historical Session remains unchanged:
 
----
+```text
+S042 = DISCONNECTED
+S043 = current Session
+```
 
-## 11.2 Synchronization Content
+## 10.2 Synchronization State
 
-The Agent should provide only information required for recovery and
-reconciliation.
-
-Conceptually:
+The Agent may provide:
 
 ```text
 SYNC_STATE
@@ -1409,7 +862,6 @@ SYNC_STATE
     pending_result_ids,
 
     recent_task_ids,
-
     recent_message_ids,
 
     last_task_id?,
@@ -1419,16 +871,7 @@ SYNC_STATE
 }
 ```
 
-The C2 retains the more complete historical model.
-
----
-
-## 11.3 Synchronization Response
-
-The C2's response communicates reconciliation decisions rather than blindly
-replaying the database.
-
-Conceptually:
+The C2 may respond with:
 
 ```text
 SYNC_STATE_RESPONSE
@@ -1440,43 +883,16 @@ SYNC_STATE_RESPONSE
 }
 ```
 
-The exact structure remains to be finalized.
+Exact fields and conflict-resolution rules remain open.
+
+Synchronization restores **operational state**; it does not restore Session
+identity.
 
 ---
 
-## 11.4 Synchronization Does Not Mean Session Resumption
+# 11. File Transfer
 
-The distinction is:
-
-```text
-Session recovery
-→ create a new Session
-
-State recovery
-→ synchronize and reconcile Agent/C2 state
-```
-
-For example:
-
-```text
-S042 = CLOSED
-S043 = CONNECTED
-
-T001
-created during S042
-completed before S043
-```
-
-There is no requirement for T001 to be recreated.
-
----
-
-# 12. File Transfer
-
-A **File Transfer** represents the logical lifecycle of a file being
-transferred between the C2 and Agent.
-
-Conceptually:
+A **File Transfer** represents the logical movement of a file.
 
 ```text
 File Transfer
@@ -1492,94 +908,79 @@ File Transfer
 └── storage_path
 ```
 
-The `task_id` relationship is optional because a File Transfer is not
-necessarily identical to a Task.
-
----
-
-## 12.1 File Transfer and Task
-
-A Task may initiate one or more File Transfers:
+A Task may have zero or more associated File Transfers:
 
 ```text
 Task T002
-   │
-   ├── FileTransfer F001
-   ├── FileTransfer F002
+   ├── F001
+   ├── F002
    └── ...
 ```
 
-Conceptually:
-
-```text
-Task 1 ─── 0..* FileTransfer
-```
-
-when the transfer is associated with a Task.
-
----
-
-## 12.2 File Transfer Correlation
-
-Individual transfer Messages use `transfer_id`:
+Transfer Messages are correlated with `transfer_id`:
 
 ```text
 FILE_START
-transfer_id = F001
-       │
-       ▼
+      │
+      ▼
 FILE_CHUNK
-transfer_id = F001
-sequence = 1
-       │
-       ▼
+      │
+      ▼
 FILE_CHUNK
-transfer_id = F001
-sequence = 2
-       │
-       ▼
+      │
+      ▼
 FILE_END
-transfer_id = F001
 ```
 
-The logical File Transfer therefore remains distinct from the individual
-Messages used to transport it.
+The logical Transfer remains distinct from the individual Messages carrying
+its data.
 
 ---
 
-# 13. File Transfer and Storage
+# 12. Storage
 
-A File Transfer represents the logical operation, while Storage represents
-where the actual bytes are persisted.
+Structured application state and file data are stored separately.
 
 ```text
-File Transfer
-      │
-      ├── transfer metadata
-      ├── transfer state
-      └── storage reference
-                 │
-                 ▼
-          File Storage
-                 │
-                 ▼
-             File Data
+                Application State
+                       │
+                       ▼
+               Database Interface
+                       │
+                       ▼
+                    SQLite
 ```
 
-This prevents the domain model from treating file metadata and file bytes as
-the same object.
+Structured data includes:
 
-The implementation should process file data incrementally where appropriate,
-rather than requiring an entire file to be loaded into memory.
+```text
+agents
+sessions
+tasks
+results
+file transfers
+events
+```
+
+Actual file contents use:
+
+```text
+                  File Data
+                     │
+                     ▼
+           File Storage Interface
+                     │
+                     ▼
+                 Filesystem
+```
+
+This separates logical file-transfer metadata from physical file data.
 
 ---
 
-# 14. Event
+# 13. Event
 
-An **Event** represents an operational occurrence within the C2-AUTOMATED
-system.
-
-Events are distinct from protocol Messages.
+An **Event** represents an operational occurrence.
 
 Examples include:
 
@@ -1589,7 +990,6 @@ session establishment
 session disconnection
 session closure
 beacon reception
-beacon acknowledgement
 ping / pong
 task creation
 task dispatch
@@ -1620,49 +1020,14 @@ Event
 └── metadata
 ```
 
-An Event describes something that **happened**.
-
-A Message describes something that was **exchanged through the protocol**.
-
-For example:
-
-```text
-TASK_ACK message
-        │
-        ▼
-task acknowledgement event
-        │
-        ▼
-Task state update
-```
-
-The event may be caused by the Message, but it is not the same object.
+A Message describes protocol communication; an Event records what happened
+operationally.
 
 ---
 
-# 15. Entity Relationships
+# 14. Entity Relationships and Cardinalities
 
-The current conceptual relationships are:
-
-```text
-                    ┌─────────────┐
-                    │    Agent    │
-                    └──────┬──────┘
-                           │
-               ┌───────────┼───────────┐
-               │           │           │
-               ▼           ▼           ▼
-          ┌─────────┐ ┌─────────┐ ┌─────────────┐
-          │Session  │ │  Task   │ │File Transfer│
-          └─────────┘ └────┬────┘ └─────────────┘
-                           │
-                           ▼
-                      ┌─────────┐
-                      │ Result  │
-                      └─────────┘
-```
-
-At a high level:
+The principal relationships are:
 
 ```text
 Agent
@@ -1674,28 +1039,14 @@ Task
  ├── Results
  └── File Transfers
 
-Event
- └── references relevant entities
+Events
+ └── reference relevant entities
 
-Message
- └── correlates relevant entities
+Messages
+ └── correlate relevant entities
 ```
 
-The important constraint is:
-
-```text
-Task
-  → belongs to Agent
-
-Task
-  → is not owned by Session
-```
-
----
-
-# 16. Cardinalities
-
-The current conceptual cardinalities are:
+Current conceptual cardinalities:
 
 | Relationship | Cardinality |
 |---|---|
@@ -1708,274 +1059,17 @@ The current conceptual cardinalities are:
 | Session → Event | `1 → 0..*` |
 | Task → Event | `1 → 0..*` |
 
-The Task → Result cardinality remains open until the execution/result model is
-fully finalized.
+A Session does not own Tasks.
 
-A Session does not have ownership cardinality over Tasks.
-
-Tasks may reference Sessions only as communication-history metadata.
+Task references to Sessions are communication-history metadata only.
 
 ---
 
-# 17. Identifiers
+# 15. Persistence and Runtime State
 
-The current model distinguishes:
+The implementation should distinguish:
 
-| Identifier | Purpose |
-|---|---|
-| `agent_id` | persistent Agent identity |
-| `session_id` | one communication episode |
-| `task_id` | one logical Task |
-| `result_id` | one Result |
-| `message_id` | one protocol Message |
-| `transfer_id` | one File Transfer |
-| `event_id` | one Event |
-
-The exact format and generation mechanisms remain to be defined.
-
----
-
-# 18. Identifier Independence
-
-Identifiers must not be conflated.
-
-For example:
-
-```text
-agent_id    ≠ session_id
-task_id     ≠ message_id
-result_id   ≠ task_id
-transfer_id ≠ message_id
-```
-
-A logical Task may generate Messages across multiple Sessions:
-
-```text
-T001
- │
- ├── M100 / S042
- ├── M101 / S042
- ├── communication loss
- ├── M102 / S043
- └── M103 / S043
-```
-
-This is valid because:
-
-```text
-Task identity
-    ≠
-Session identity
-    ≠
-Message identity
-```
-
----
-
-# 19. Task and Result Relationship
-
-The Task/Result relationship provides traceability between requested work and
-its outcome.
-
-```text
-Task T004
-    │
-    └── Result R009
-```
-
-The traceability chain is:
-
-```text
-requested operation
-      ↓
-Task
-      ↓
-execution
-      ↓
-Result
-```
-
-A Task may be associated with the Session in which it was created and the
-most recent Session through which it was communicated, without becoming
-Session-owned:
-
-```text
-T004
-agent_id            = A001
-created_session_id  = S042
-last_session_id     = S043
-status              = COMPLETED
-result_id           = R009
-```
-
-This allows the model to represent cross-session operations explicitly.
-
----
-
-# 20. Agent, Task, Session, and Communication Independence
-
-These concepts represent different dimensions of system state:
-
-```text
-Agent
-→ "Who is the endpoint?"
-
-Session
-→ "Which communication episode is this?"
-
-Connection
-→ "Which transport connection is currently being used?"
-
-Communication state
-→ "How reliably can the Agent communicate with the C2?"
-
-Task
-→ "What logical operation exists?"
-
-Result
-→ "What outcome was produced?"
-```
-
-For example:
-
-```text
-Agent A001
-health = ALIVE
-
-Communication
-state = OFFLINE_WAIT
-
-Last Session
-S042 = DISCONNECTED
-
-Task T001
-status = RUNNING
-```
-
-This is valid.
-
-The Agent may still be executing T001 locally even though its previous
-Session is no longer connected.
-
----
-
-# 21. Offline Operation and Local State
-
-Communication loss does not automatically erase Agent-side operational state.
-
-If the Agent is executing:
-
-```text
-T001 = RUNNING
-```
-
-and C2 communication is lost:
-
-```text
-T001 → may continue
-```
-
-If T001 completes:
-
-```text
-R001 → local pending-results
-```
-
-Queued Tasks remain queued:
-
-```text
-T002 = QUEUED
-T003 = QUEUED
-```
-
-The Agent does not normally start new queued work while communication is
-unavailable.
-
-After reconnection:
-
-```text
-new Session
-      ↓
-SYNCHRONIZING
-      ↓
-pending results
-task state reconciliation
-      ↓
-SYNC_COMPLETE
-      ↓
-resume normal queued work
-```
-
-This preserves execution state independently from communication state.
-
----
-
-# 22. Persistence Model
-
-The C2 server separates structured application state from actual file
-contents.
-
-```text
-                Application State
-                       │
-                       ▼
-               Database Interface
-                       │
-                       ▼
-                    SQLite
-```
-
-Examples of structured data include:
-
-```text
-agents
-sessions
-tasks
-results
-file transfers
-events
-```
-
-Actual file contents are persisted through the file-storage abstraction:
-
-```text
-                  File Data
-                     │
-                     ▼
-           File Storage Interface
-                     │
-                     ▼
-                 Filesystem
-```
-
-Conceptually:
-
-```text
-storage/
-├── database/
-└── files/
-
-data/
-└── files/
-```
-
-The exact repository structure may evolve independently from the conceptual
-model.
-
----
-
-# 23. In-Memory and Persistent State
-
-Not every piece of information needs the same lifetime.
-
-The implementation should distinguish between **persistent**, **active**, and
-**temporary** state.
-
-## 23.1 Persistent State
-
-Information that should survive a C2 process restart where appropriate.
-
-Examples:
+### Persistent State
 
 ```text
 Agent identity
@@ -1986,79 +1080,79 @@ Transfer metadata
 Relevant event history
 ```
 
----
-
-## 23.2 Active State
-
-Information required while an operation or communication context is active.
-
-Examples:
+### Active State
 
 ```text
 active Session
-active communication state
-pending Task
-running Task
-queued Task
-active File Transfer
+communication state
+pending/running/queued Tasks
+active File Transfers
 synchronization state
 ```
 
----
-
-## 23.3 Temporary State
-
-Information that exists only while processing an operation.
-
-Examples:
+### Temporary State
 
 ```text
 partial file transfer
 temporary file
-intermediate reconstruction data
-temporary synchronization data
+intermediate synchronization data
 ```
 
-The exact persistence policy remains an implementation decision.
-
----
-
-# 24. Synchronization and Persistence
-
-Persistence is particularly important because Tasks and Results can survive
-communication interruptions and Sessions.
+The conceptual entity model does not require every runtime attribute to be
+persisted permanently.
 
 For example:
 
 ```text
-S042
-   ↓
-connection lost
-   ↓
-T001 continues
-   ↓
-R001 produced locally
-   ↓
-S043
-   ↓
-synchronization
-   ↓
-R001 stored by C2
+A001
+active_session_id = S043
 ```
 
-The C2 should therefore retain enough historical Task, Result, and Session
-information to reconcile state after reconnection.
+is runtime information, while historical records remain persistent:
 
-The C2 remains the authoritative historical record, while the Agent maintains
-the smaller local state required for continuity and recovery.
+```text
+S042 = DISCONNECTED
+S043 = CONNECTED
+```
 
 ---
 
-# 25. Consistency Rules
+# 16. Reliability and Offline Operation
 
-The final implementation should preserve several basic consistency rules.
+Communication state and execution state are independent.
 
-Examples include:
+A running Task may continue while communication is unavailable:
+
+```text
+T001 = RUNNING
+communication = OFFLINE_WAIT
+```
+
+A completed Result may therefore remain locally pending:
+
+```text
+T001 → COMPLETED
+R001 → pending locally
+```
+
+Queued work remains paused during communication-loss recovery.
+
+After a new Session is established, synchronization handles pending Results
+and Task reconciliation before normal queued execution resumes.
+
+This implements the principle:
+
+```text
+communication failure
+        ≠
+execution failure
+```
+
+---
+
+# 17. Consistency Rules
+
+The implementation should preserve:
 
 ```text
 A Task must reference a known Agent.
@@ -2069,25 +1163,21 @@ A File Transfer must reference its intended Agent.
 
 A Result should reference the Task from which it originated.
 
-A Message must have a valid message identifier.
+A correlated Message must use identifiers belonging to the correct Agent.
 
-A correlated Message must use identifiers referring to the correct entities.
-
-A Session identifier must correspond to the Agent identified by the Message.
-
-A Task-related Message may use a Session different from the Task's
-created_session_id.
-
-A TASK_STATUS response must refer to the requested Task.
+A Task-related Message may use a different Session from the Task's
+creation Session.
 
 A RESULT must not silently create an unknown Task.
 
-A new connection must create a new Session rather than revive an old one.
+A new Connection must create a new Session.
 
 A Session in DISCONNECTED or CLOSED must not return to CONNECTED.
 
-An Agent must not be treated as TERMINATED solely because communication was
-lost.
+Communication loss alone must not imply Agent termination.
+
+Duplicate protocol delivery must not create duplicate logical Tasks or Results
+or cause unsafe duplicate execution.
 ```
 
 These rules may be enforced through application validation, persistence
@@ -2095,413 +1185,163 @@ constraints, or both.
 
 ---
 
-# 26. Domain Model vs Database Model
+# 18. Normative State-Transition Table
 
-The conceptual entities in this document should not automatically be treated
-as one-to-one representations of database tables.
+This table is the authoritative cross-entity reference.
 
-For example:
+The terms **MUST**, **MUST NOT**, and **MAY** are normative.
+
+| Entity / Context | Current State | Trigger | Required Transition / Behavior | Resulting State |
+|---|---|---|---|---|
+| Session | `CONNECTING` | successful registration/session establishment | C2 MUST create a new Session for the new connection | `CONNECTED` |
+| Session | `CONNECTED` | connection lost | C2 MUST retain the Session record and mark it disconnected | `DISCONNECTED` |
+| Session | `CONNECTED` | orderly/explicit termination | Session MUST be finalized as deliberately ended | `CLOSED` |
+| Session | `DISCONNECTED` | new connection | C2 MUST create a new Session; it MUST NOT revive the old Session | new Session `CONNECTED` |
+| Session | `CLOSED` | new connection | C2 MUST create a new Session; the closed Session MUST remain closed | new Session `CONNECTED` |
+| Agent health | `UNKNOWN` | valid `REGISTER` | C2 MUST recognize/create the Agent identity and mark it reachable | `ALIVE` |
+| Agent health | `ALIVE` | repeated failed communication checks | C2 MAY transition the Agent to an unreachable state according to configured liveness policy | `LIKELY_UNREACHABLE` |
+| Agent health | `LIKELY_UNREACHABLE` | valid communication resumes | C2 MUST update the Agent as reachable | `ALIVE` |
+| Agent health | any non-terminal health state | communication loss alone | System MUST NOT infer `TERMINATED` solely from communication loss | unchanged / liveness-driven |
+| Agent communication | `CONNECTING` | registration accepted | Agent enters synchronization when required | `SYNCHRONIZING` |
+| Agent communication | `SYNCHRONIZING` | reconciliation completed | Agent MUST NOT resume normal queued work before synchronization completes | `CONNECTED` |
+| Agent communication | `CONNECTED` | missed/lost expected response | Agent MAY retry communication and MUST NOT immediately enter offline mode | `DEGRADED` after retry/recovery policy |
+| Agent communication | `DEGRADED` | communication recovery succeeds | Agent resumes normal communication | `CONNECTED` |
+| Agent communication | `DEGRADED` | recovery policy exhausted | Agent MUST stop normal beaconing/new queued work and enter recovery mode | `OFFLINE_WAIT` |
+| Agent communication | `OFFLINE_WAIT` | reconnect attempt succeeds | Agent MUST establish a new connection and synchronization phase | `CONNECTING` → `SYNCHRONIZING` |
+| Agent communication | `OFFLINE_WAIT` | reconnect attempt fails | Agent MUST remain in recovery mode and MAY retry later | `OFFLINE_WAIT` |
+| Task | `PENDING` | C2 dispatches Task | C2 MUST record dispatch and begin acknowledgement tracking | `WAITING_ACK` |
+| Task | `WAITING_ACK` | valid `TASK_ACK` | C2 MUST record task acceptance | `QUEUED` |
+| Task | `QUEUED` | Agent starts execution | Agent SHOULD report `TASK_STATUS(RUNNING)` and MUST update local execution state | `RUNNING` |
+| Task | `RUNNING` | successful execution / valid result | C2 MUST associate and persist the Result | `COMPLETED` |
+| Task | `RUNNING` | execution failure | C2 MUST distinguish execution failure from communication failure | `FAILED` |
+| Task | `WAITING_ACK` | ACK timeout | C2 MUST enter recovery and MUST NOT blindly redispatch the Task | recovery / unresolved |
+| Task | `RUNNING` | execution timeout | C2 MAY use status recovery before finalizing the Task as timed out | `TIMEOUT` when finalized |
+| Task | `WAITING_ACK` / unresolved | `PONG` received | C2 MUST use `TASK_STATUS_QUERY` to determine the Task state rather than assuming failure | recovered state |
+| Task | any recoverable state | `TASK_STATUS` received | C2 MUST reconcile its Task state with the reported valid Agent state | reported/reconciled state |
+| Task | `WAITING_ACK` | `TASK_STATUS(UNKNOWN)` | C2 MAY consider redispatch subject to retry policy and duplicate protection | policy-dependent |
+| Task | any non-final state | communication loss | Agent MUST NOT automatically cancel a running Task solely because communication was lost | task state preserved |
+| Task | `RUNNING` during communication loss | local execution completes | Agent MUST retain the Result locally if C2 is unreachable | local completed/pending result |
+| Task | `QUEUED` during communication loss | communication unavailable | Agent MUST NOT start new queued C2-originated work | `QUEUED` / paused |
+| Result | locally pending | new communication available | Agent MUST retain Result identity and transmit it during recovery/synchronization | pending → synchronized |
+| Result | received by C2 | duplicate `result_id` | C2 MUST NOT create a second logical Result | unchanged |
+| Message | any | duplicate `message_id` | Receiver MUST detect duplicates where deduplication is applicable and MUST NOT repeat unsafe processing | unchanged |
+| Task | any | duplicate `task_id` | Agent MUST use logical Task identity to prevent unintended duplicate execution | unchanged / deduplicated |
+| Synchronization | `SYNCHRONIZING` | `SYNC_STATE` exchanged | C2 and Agent MUST reconcile relevant Task/Result state before normal queued execution resumes | synchronized |
+| Synchronization | `SYNCHRONIZING` | pending Result known to C2 already | C2 MUST NOT create a duplicate Result solely because Agent reports it as pending | synchronized |
+| Synchronization | `SYNCHRONIZING` | C2 Task unknown to Agent | C2 MAY redispatch the Task after confirming it is unknown | normal Task lifecycle |
+| Synchronization | `SYNCHRONIZING` | Agent Task unknown to C2 | C2 MUST NOT silently create and execute an unknown Task solely from Agent state | unresolved/anomalous |
+| Synchronization | `SYNCHRONIZING` | explicit C2 cancellation vs queued Agent Task | Where cancellation is supported, the explicit cancellation decision MAY override queued local work | `CANCELLED` |
+| File Transfer | active | `FILE_CHUNK` | Receiver MUST associate the chunk with the correct `transfer_id` | transfer remains active |
+| File Transfer | active | `FILE_END` | Receiver MUST finalize and verify the transfer before marking it complete | completed transfer |
+
+### Normative cross-state rules
+
+```text
+1. A new transport Connection MUST create a new Session.
+
+2. A Session in DISCONNECTED or CLOSED MUST NOT return to CONNECTED.
+
+3. Agent identity MUST survive Session changes.
+
+4. Tasks MUST belong logically to Agents, not Sessions.
+
+5. A Task MAY be communicated through multiple Sessions.
+
+6. A Result MAY be produced during one Session or while disconnected and
+   transmitted through a later Session.
+
+7. Communication failure MUST NOT automatically be interpreted as
+   execution failure.
+
+8. The C2 MUST NOT blindly retransmit a Task after a lost TASK_ACK.
+
+9. A running Task MUST NOT be automatically cancelled solely because
+   communication with the C2 was lost.
+
+10. Queued Tasks MUST NOT normally begin while the Agent is in
+    communication-loss recovery mode.
+
+11. Results produced while the C2 is unreachable MUST be retained locally
+    until they can be synchronized.
+
+12. Reconnection MUST create a new Session and MUST be followed by
+    synchronization before normal queued work resumes.
+
+13. Synchronization MUST reconcile state; it MUST NOT revive the previous
+    Session.
+
+14. Identifier semantics MUST remain distinct:
+    agent_id, session_id, task_id, result_id, transfer_id, message_id,
+    and event_id identify different logical objects.
+
+15. Duplicate protocol delivery MUST NOT cause duplicate logical Task,
+    Result, or unsafe Task execution.
+```
+
+---
+
+# 19. Domain Model vs Implementation
+
+The conceptual entities do not imply one-to-one database tables or Python
+objects.
+
+A typical mapping may be:
 
 ```text
 Domain Entity
      │
      ▼
-Persistence Model
+Persistence / Runtime Model
      │
      ▼
-Database
+Database or in-memory representation
 ```
 
-The final implementation may introduce database-specific fields, indexes,
-constraints, timestamps, foreign keys, or normalization decisions that are
-not part of the conceptual domain model.
-
-The same applies to protocol representations.
-
-For example:
+Likewise:
 
 ```text
-Task domain object
-      │
-      ▼
-TASK protocol model
-      │
-      ▼
+Task
+  │
+  ▼
+TASK protocol structure
+  │
+  ▼
 serialized Message
 ```
 
-These are related representations, not necessarily the same Python object.
+Database-specific fields, indexes, foreign keys, normalization, and runtime
+objects remain implementation details.
 
 ---
 
-# 27. Domain Model vs Runtime State
+# 20. Open Questions
 
-The conceptual data model does not imply that every attribute is stored
-permanently.
-
-For example:
-
-```text
-Agent
-├── persistent identity
-├── persistent history
-└── current runtime state
-```
-
-An Agent's current Session is runtime state:
-
-```text
-A001
-active_session_id = S043
-```
-
-while historical Sessions remain persistent:
-
-```text
-S042 = CLOSED
-S043 = CONNECTED
-```
-
-When the Agent is disconnected:
-
-```text
-active_session_id = null
-last_session_id   = S043
-```
-
-The exact runtime/database mapping remains an implementation decision.
-
----
-
-# 28. Reliability-Oriented Model
-
-The model explicitly supports asynchronous communication and uncertain
-delivery.
-
-The important distinction is:
-
-```text
-Message delivery state
-        ≠
-Task execution state
-```
-
-For example:
-
-```text
-C2
- │
- │ TASK T001
- ▼
-Agent
- │
- │ TASK_ACK
- X
-```
-
-The C2 cannot conclude solely from this that T001 was not accepted.
-
-Recovery therefore uses:
-
-```text
-PING
-  ↓
-PONG
-  ↓
-TASK_STATUS_QUERY
-  ↓
-TASK_STATUS
-```
-
-Similarly, if a Result is lost:
-
-```text
-T001 = RUNNING
-     ↓
-RESULT lost
-     ↓
-new communication
-     ↓
-TASK_STATUS_QUERY
-     ↓
-TASK_STATUS(COMPLETED, R001)
-```
-
-The system should not execute T001 again merely because the Result was not
-received.
-
----
-
-# 29. Duplicate Handling
-
-The model supports duplicate detection through both logical and communication
-identifiers.
-
-### Message level
-
-`message_id` identifies an individual protocol Message.
-
-### Task level
-
-`task_id` identifies the logical operation.
-
-### Result level
-
-`result_id` identifies the logical Result.
-
-Conceptually:
-
-```text
-same message_id
-→ duplicate Message
-
-same task_id
-→ same logical Task
-
-same result_id
-→ same logical Result
-```
-
-The Agent should retain a bounded history of recently seen Task and Message
-identifiers where required.
-
-The C2 should also prevent duplicate Results from creating duplicate logical
-records.
-
-The exact retention size and deduplication algorithm remain implementation
-decisions.
-
----
-
-# 30. Complete Conceptual Picture
-
-The current model can be summarized as:
-
-```text
-                            Agent
-                              │
-               ┌──────────────┼──────────────┐
-               │              │              │
-               ▼              ▼              ▼
-           Sessions          Tasks       File Transfers
-               │              │
-               │              ▼
-               │           Results
-               │
-               ▼
-        Communication context
-```
-
-The Agent itself maintains:
-
-```text
-health
-activity
-communication state
-current session
-task runtime state
-pending results
-```
-
-while the C2 maintains:
-
-```text
-Agent history
-Session history
-Task history
-Result history
-Transfer history
-Event history
-```
-
-Protocol Messages connect those states across the network:
-
-```text
-                         MESSAGE
-                            │
-                            ▼
-                     Message Router
-                            │
-           ┌────────────────┼────────────────┐
-           ▼                ▼                ▼
-     Agent Manager     Task Manager    Result Manager
-           │                │                │
-           ▼                ▼                ▼
-         Agent            Task            Result
-                            │
-                            ▼
-                      File Manager
-```
-
----
-
-# 31. Reconnection and Synchronization Picture
-
-The complete Session/communication relationship is:
-
-```text
-                 Agent A001
-                      │
-          ┌───────────┼───────────┐
-          │           │           │
-          ▼           ▼           ▼
-       Session      Session     Session
-        S041         S042        S043
-          │           │           │
-       CLOSED      CLOSED     CONNECTED
-                                  │
-                              synchronization
-                                  │
-                                  ▼
-                             normal operation
-```
-
-The state recovery relationship is:
-
-```text
-Old Session
-    │
-    ▼
-communication loss
-    │
-    ▼
-Agent retains local state
-    │
-    ▼
-new connection
-    │
-    ▼
-new Session
-    │
-    ▼
-SYNCHRONIZING
-    │
-    ├── pending Results
-    ├── current Task
-    ├── queued Tasks
-    └── recent identifiers
-    │
-    ▼
-reconciliation
-    │
-    ▼
-SYNC_COMPLETE
-    │
-    ▼
-normal operation
-```
-
-The Session itself is **not** resumed.
-
-The Agent's state is **reconciled**.
-
----
-
-# 32. Current Design Summary
-
-The current model therefore keeps the following distinctions explicit:
-
-```text
-Identity
-  → Agent
-
-Communication episode
-  → Session
-
-Transport connection
-  → TCP/TLS connection
-
-Agent health
-  → UNKNOWN / ALIVE / LIKELY_UNREACHABLE / TERMINATED
-
-Agent activity
-  → IDLE / BUSY
-
-Agent communication mode
-  → CONNECTING / CONNECTED / DEGRADED / OFFLINE_WAIT / SYNCHRONIZING
-
-Requested operation
-  → Task
-
-Execution output
-  → Result
-
-Network representation
-  → Message
-
-File movement
-  → File Transfer
-
-Operational occurrence
-  → Event
-
-Physical persistence
-  → Storage
-```
-
-The principal relationship rules are:
-
-```text
-Agent owns Tasks.
-Agent owns Sessions.
-Task owns/produces Results.
-Tasks can span Sessions.
-Results can be transmitted through later Sessions.
-Messages can concern Tasks created through earlier Sessions.
-New connections create new Sessions.
-Sessions are never revived.
-State is synchronized after reconnection.
-```
-
-The principal correlation identifiers are:
-
-```text
-agent_id
-session_id
-task_id
-result_id
-transfer_id
-message_id
-event_id
-```
-
-The resulting model keeps **identity, communication, execution, protocol
-representation, and persistence separate**, while still providing the
-correlations required for asynchronous operation and recovery.
-
----
-
-# 33. Open Questions
-
-The following points remain to be finalized:
+The following remain to be finalized:
 
 - exact fields for each entity;
-- exact distinction between runtime Connection objects and persistent
-  Session records;
+- exact runtime Connection representation;
 - identifier format and generation;
-- database primary keys;
-- database foreign keys;
-- database indexes;
+- database keys and indexes;
 - exact Task → Result cardinality;
-- exact Agent health transition thresholds;
-- exact communication retry policy;
-- exact `OFFLINE_WAIT` reconnect interval;
-- exact Beacon interval and jitter defaults;
-- exact timeout values;
-- exact duplicate-retention size;
-- exact synchronization payload fields;
-- exact synchronization conflict-resolution algorithm;
-- exact Result recovery mechanism;
-- exact Task cancellation behavior;
-- exact authentication and registration mechanism;
-- exact serialization format;
-- exact File Transfer retry/resume behavior;
-- event persistence and retention policy;
-- synchronization between in-memory and persistent state;
-- exact mapping between protocol models, domain models, and database models.
+- Agent health thresholds;
+- communication retry policy;
+- `OFFLINE_WAIT` reconnect interval;
+- Beacon interval and jitter;
+- timeout values;
+- duplicate-retention size;
+- synchronization payload;
+- synchronization conflict resolution;
+- Result recovery mechanism;
+- Task cancellation behavior;
+- authentication and registration mechanism;
+- serialization format;
+- File Transfer retry/resume behavior;
+- Event persistence and retention;
+- runtime/persistent state synchronization;
+- exact mapping between protocol, domain, and database models.
 
-These decisions should be resolved before the final persistence model and
-protocol implementation are considered stable.
+These decisions should be resolved before the persistence and protocol
+implementations are considered stable.
 
 Significant architectural or protocol decisions should be recorded in
 [`DECISIONS.md`](../DECISIONS.md).
