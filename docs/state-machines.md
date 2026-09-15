@@ -6,8 +6,11 @@
 > It specifies valid states, transitions, triggers, and transition rules.
 >
 > The data model defines the entities and their relationships.
-> This document defines how their state changes.
-> The protocol defines how those state changes are communicated.
+> This document defines how their logical state changes.
+> The protocol defines how those changes are communicated.
+>
+> **This document is authoritative for logical state definitions and valid
+> state transitions.**
 
 ---
 
@@ -34,15 +37,15 @@ File Transfer
 
 These state machines MUST remain conceptually independent.
 
-For example:
+For example, the following combination is valid:
 
 ```text
-Agent health       = ALIVE
-Agent communication = OFFLINE_WAIT
-Agent activity     = BUSY
+Agent health          = ALIVE
+Agent communication   = OFFLINE_WAIT
+Agent activity        = BUSY
 
-Task T001          = RUNNING
-Session S042       = DISCONNECTED
+Task T001             = RUNNING
+Session S042          = DISCONNECTED
 ```
 
 There is no contradiction in this combination.
@@ -52,7 +55,49 @@ of a Task or the health state of an Agent.
 
 ---
 
-# 2. State-Machine Conventions
+# 2. Normative Diagram Conventions
+
+The diagrams in this document are **normative**.
+
+They define the authoritative states and valid logical transitions of the
+system. They are not examples of particular executions.
+
+A normative diagram:
+
+- MUST only contain states defined by this document;
+- MUST only show valid logical transitions;
+- MUST NOT introduce implementation-specific states;
+- MUST NOT introduce protocol messages that are not themselves the transition
+  definition;
+- MUST NOT be interpreted as an exhaustive description of communication
+  sequences between Agent and C2.
+
+Scenario and sequence diagrams are intentionally kept outside this document.
+
+They belong in documents such as:
+
+- `protocol-state-transition.md`;
+- `reconnection-and-synchronization.md`;
+- `task-lifecycle.md`;
+- `file-transfer.md`.
+
+For example, a diagram showing:
+
+```text
+Agent → REGISTER → C2
+Agent ← REGISTER_ACK ← C2
+Agent → SYNC_STATE → C2
+```
+
+is a **protocol scenario**, not a state-machine definition.
+
+Likewise, a diagram showing a particular Agent reconnecting from one Session
+to another is an **illustrative scenario**, not an alternative Session state
+machine.
+
+---
+
+# 3. State-Machine Conventions
 
 The following notation is used:
 
@@ -64,7 +109,7 @@ STATE_A
 STATE_B
 ```
 
-A transition describes a change caused by an event or condition.
+A transition describes a logical state change caused by an event or condition.
 
 The following terms are normative:
 
@@ -76,9 +121,13 @@ The following terms are normative:
 A state machine describes **logical state**, not necessarily a single Python
 enum or database column.
 
+Recovery procedures, protocol messages, and implementation mechanisms are
+described in their respective documents and MUST NOT introduce alternative
+definitions of the states specified here.
+
 ---
 
-# 3. Agent State Machines
+# 4. Agent State Machines
 
 Agent state is divided into three independent dimensions:
 
@@ -103,9 +152,9 @@ maintain.
 
 ---
 
-# 4. Agent Health State Machine
+# 5. Agent Health State Machine
 
-## 4.1 States
+## 5.1 States
 
 ```text
 UNKNOWN
@@ -136,7 +185,7 @@ Communication loss alone MUST NOT produce this state.
 
 ---
 
-## 4.2 State Diagram
+## 5.2 Normative State Diagram
 
 ```text
                    valid REGISTER
@@ -149,32 +198,35 @@ Communication loss alone MUST NOT produce this state.
                          threshold    │  │
                                       ▼  │
                               LIKELY_UNREACHABLE
-                                      │
-                                      │ confirmed termination
-                                      ▼
-                                  TERMINATED
-```
+                                  │          │
+                                  │          │ valid communication
+                                  │          └──────────────► ALIVE
+                                  │
+                                  │ confirmed termination
+                                  ▼
+                              TERMINATED
 
-`ALIVE → TERMINATED` is possible when explicit termination information exists,
-but it MUST NOT be inferred solely from communication loss.
+ALIVE ───────────── confirmed termination ─────────────► TERMINATED
+```
 
 ---
 
-## 4.3 Transitions
+## 5.3 Transitions
 
 | Current State | Trigger | Result | Rule |
 |---|---|---|---|
-| `UNKNOWN` | valid `REGISTER` | `ALIVE` | Agent identity is established/revalidated |
-| `ALIVE` | insufficient expected communication | `LIKELY_UNREACHABLE` | Based on configured liveness policy |
-| `LIKELY_UNREACHABLE` | valid communication | `ALIVE` | Reachability is restored |
-| non-terminal | confirmed termination | `TERMINATED` | Requires explicit/confirmed evidence |
-| any | communication loss alone | unchanged or liveness transition | MUST NOT infer termination |
+| `UNKNOWN` | Valid `REGISTER` | `ALIVE` | Agent identity is established or revalidated |
+| `ALIVE` | Insufficient expected communication | `LIKELY_UNREACHABLE` | Based on configured liveness policy |
+| `LIKELY_UNREACHABLE` | Valid communication | `ALIVE` | Reachability is restored |
+| `ALIVE` | Confirmed termination | `TERMINATED` | Requires explicit or confirmed evidence |
+| `LIKELY_UNREACHABLE` | Confirmed termination | `TERMINATED` | Requires explicit or confirmed evidence |
+| Any | Communication loss alone | Unchanged or liveness transition | MUST NOT infer termination |
 
 ---
 
-# 5. Agent Activity State Machine
+# 6. Agent Activity State Machine
 
-## 5.1 States
+## 6.1 States
 
 ```text
 IDLE
@@ -187,32 +239,19 @@ It belongs to the Task state machine.
 
 ---
 
-## 5.2 State Diagram
+## 6.2 Normative State Diagram
 
 ```text
        Task starts
 IDLE ───────────────► BUSY
  ▲                     │
- │                     │ no active work
+ │                     │ no active Task remains
  └─────────────────────┘
-```
-
-The exact definition of when an Agent becomes `BUSY` depends on the execution
-model.
-
-A practical interpretation is:
-
-```text
-IDLE
-→ no currently executing Task
-
-BUSY
-→ at least one Task is currently executing
 ```
 
 ---
 
-## 5.3 Transitions
+## 6.3 Transitions
 
 | Current State | Trigger | Result |
 |---|---|---|
@@ -221,39 +260,33 @@ BUSY
 
 Queued Tasks alone do not necessarily make the Agent `BUSY`.
 
-For example:
-
-```text
-Agent = IDLE
-T001 = QUEUED
-T002 = QUEUED
-```
-
-is valid if neither Task is currently executing.
-
 ---
 
-# 6. Agent Communication State Machine
+# 7. Agent Communication State Machine
 
-Communication state describes the Agent's ability to communicate with the C2.
+Communication state describes the Agent's communication lifecycle with the C2.
 
-## 6.1 States
+## 7.1 States
 
 ```text
 CONNECTING
+SYNCHRONIZING
 CONNECTED
 DEGRADED
 OFFLINE_WAIT
-SYNCHRONIZING
 ```
 
 ### `CONNECTING`
 
 The Agent is attempting to establish communication.
 
+### `SYNCHRONIZING`
+
+A new Session has been established and state reconciliation is in progress.
+
 ### `CONNECTED`
 
-A valid communication Session exists and normal communication is available.
+Synchronization has completed and normal communication is available.
 
 ### `DEGRADED`
 
@@ -265,46 +298,42 @@ has failed or become unreliable.
 Normal communication has failed according to the recovery policy. The Agent
 waits before attempting another connection.
 
-### `SYNCHRONIZING`
-
-A new Session has been established and state reconciliation is in progress.
-
 ---
 
-# 7. Communication State Diagram
+# 8. Normative Communication State Diagram
 
 ```text
-                         successful connection
-                    ┌──────────────────────────┐
-                    │                          ▼
-              CONNECTING ─────────────────► SYNCHRONIZING
-                                                │
-                                                │ reconciliation complete
-                                                ▼
-                                           CONNECTED
-                                           │       ▲
-                            communication │       │ recovery
-                              degraded     │       │ succeeds
-                                           ▼       │
-                                       DEGRADED ───┘
+                    successful connection
+                 ┌─────────────────────────┐
+                 │                         ▼
+           CONNECTING ───────────────► SYNCHRONIZING
                                            │
-                                           │ recovery exhausted
+                                           │ reconciliation complete
                                            ▼
-                                      OFFLINE_WAIT
-                                           │
-                                           │ reconnect attempt
-                                           ▼
-                                      CONNECTING
+                                      CONNECTED
+                                      │       ▲
+                       communication │       │ recovery
+                         unreliable   │       │ succeeds
+                                      ▼       │
+                                  DEGRADED ───┘
+                                      │
+                                      │ recovery exhausted
+                                      ▼
+                                 OFFLINE_WAIT
+                                      │
+                                      │ reconnect attempt
+                                      ▼
+                                 CONNECTING
 ```
 
 ---
 
-# 8. Communication Transitions
+# 9. Communication Transitions
 
 | Current State | Trigger | Result |
 |---|---|---|
 | `CONNECTING` | Connection succeeds | `SYNCHRONIZING` |
-| `SYNCHRONIZING` | Reconciliation complete | `CONNECTED` |
+| `SYNCHRONIZING` | Reconciliation completes | `CONNECTED` |
 | `CONNECTED` | Communication becomes unreliable | `DEGRADED` |
 | `DEGRADED` | Communication recovers | `CONNECTED` |
 | `DEGRADED` | Recovery policy exhausted | `OFFLINE_WAIT` |
@@ -316,28 +345,26 @@ The Agent SHOULD periodically attempt reconnection from `OFFLINE_WAIT`.
 
 It MUST NOT remain permanently silent.
 
+Detailed reconnection and synchronization behavior is defined in
+`reconnection-and-synchronization.md`.
+
 ---
 
-# 9. Communication Failure Rules
+# 10. Communication Failure Rules
 
 Communication failure is deliberately separated from Task execution.
 
-```text
-communication failure
-        │
-        ├── affects communication state
-        │
-        ├── affects Session state
-        │
-        └── MAY affect Agent liveness
-```
+A communication failure may affect:
+
+- the Agent communication state;
+- the Session state;
+- the Agent health state through the liveness policy.
 
 It does not automatically imply:
 
 ```text
 Task → FAILED
 Agent → TERMINATED
-Session → revived after reconnect
 ```
 
 A running Task may continue while communication is unavailable.
@@ -347,11 +374,11 @@ synchronization has completed.
 
 ---
 
-# 10. Session State Machine
+# 11. Session State Machine
 
-A Session represents one communication episode.
+A Session represents one communication episode between an Agent and the C2.
 
-## 10.1 States
+## 11.1 States
 
 ```text
 CONNECTING
@@ -362,7 +389,7 @@ CLOSED
 
 ---
 
-## 10.2 State Diagram
+## 11.2 Normative State Diagram
 
 ```text
 CONNECTING
@@ -380,13 +407,13 @@ DISCONNECTED  CLOSED
 
 ---
 
-## 10.3 Transitions
+## 11.3 Transitions
 
 | Current State | Trigger | Result |
 |---|---|---|
-| `CONNECTING` | Successful registration/establishment | `CONNECTED` |
+| `CONNECTING` | Successful establishment | `CONNECTED` |
 | `CONNECTED` | Connection lost | `DISCONNECTED` |
-| `CONNECTED` | Orderly/explicit termination | `CLOSED` |
+| `CONNECTED` | Orderly or explicit termination | `CLOSED` |
 
 There is deliberately no:
 
@@ -399,45 +426,40 @@ transition.
 
 ---
 
-# 11. New Session Rule
+# 12. New Session Rule
 
-When communication is re-established after a Session has ended:
+The Session state machine has no transition that reopens a terminated
+Session.
 
-```text
-Old Session
-S042 = DISCONNECTED
-        │
-        │ new Connection
-        ▼
-New Session
-S043 = CONNECTED
-```
-
-The previous Session remains part of history.
-
-The C2 MUST create a new `session_id`.
+When communication is re-established after a Session has ended, a **new
+Session** MUST be created.
 
 Therefore:
 
 ```text
-S042 ≠ S043
+DISCONNECTED / CLOSED
+        │
+        │ new connection
+        ▼
+   NEW Session
 ```
 
-The Agent identity remains the same:
+The previous Session remains historical.
 
-```text
-A001
- ├── S042
- └── S043
-```
+The C2 MUST assign a new `session_id`.
 
-Synchronization occurs through S043; it does not revive S042.
+The Agent identity remains unchanged.
+
+The detailed reconnection sequence and synchronization workflow are defined
+in `reconnection-and-synchronization.md`.
 
 ---
 
-# 12. Task State Machine
+# 13. Task State Machine
 
-## 12.1 States
+The Task state model is **authoritative and frozen**.
+
+## 13.1 States
 
 ```text
 PENDING
@@ -450,7 +472,9 @@ TIMEOUT
 CANCELLED
 ```
 
-Final states are:
+These are the only authoritative Task lifecycle states.
+
+Terminal states are:
 
 ```text
 COMPLETED
@@ -459,41 +483,63 @@ TIMEOUT
 CANCELLED
 ```
 
+`UNKNOWN` is **not** a Task lifecycle state.
+
+It is a recovery/reporting condition used when the current execution state
+cannot currently be established.
+
 ---
 
-# 13. Task State Diagram
+# 14. Normative Task State Diagram
 
 ```text
-PENDING
-   │
-   │ dispatch
-   ▼
-WAITING_ACK
-   │
-   │ TASK_ACK
-   ▼
-QUEUED
-   │
-   │ execution starts
-   ▼
-RUNNING
-  │ │
-  │ │
-  │ └──────── execution failure ───────► FAILED
-  │
-  ├──────── successful completion ─────► COMPLETED
-  │
-  └──────── execution timeout ─────────► TIMEOUT
+                         ┌──────────────────┐
+                         │     PENDING      │
+                         └────────┬─────────┘
+                                  │
+                               dispatch
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │   WAITING_ACK    │
+                         └────────┬─────────┘
+                                  │
+                              TASK_ACK
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │      QUEUED      │
+                         └────────┬─────────┘
+                                  │
+                            execution starts
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │     RUNNING      │
+                         └───────┬──────────┘
+                            ┌────┴────┐
+                            │         │
+                         success   failure
+                            │         │
+                            ▼         ▼
+                     ┌───────────┐ ┌──────────┐
+                     │ COMPLETED │ │  FAILED  │
+                     └───────────┘ └──────────┘
 
-QUEUED ───────── explicit cancellation ─────────► CANCELLED
+Applicable non-terminal state ─────────► TIMEOUT
+Applicable cancellable state ──────────► CANCELLED
 ```
 
-The `WAITING_ACK` timeout is a recovery condition before finalization, rather
-than immediate proof that the Task failed.
+The `TIMEOUT` and `CANCELLED` transitions are intentionally represented as
+conditional transitions because their applicability depends on the Task
+lifecycle and the final timeout or cancellation policy.
+
+An acknowledgement deadline MUST NOT directly produce a final `TIMEOUT`
+transition without the applicable recovery process.
 
 ---
 
-# 14. Task Transitions
+# 15. Task Transitions
 
 | Current State | Trigger | Result |
 |---|---|---|
@@ -502,230 +548,204 @@ than immediate proof that the Task failed.
 | `QUEUED` | Execution begins | `RUNNING` |
 | `RUNNING` | Successful execution | `COMPLETED` |
 | `RUNNING` | Execution failure | `FAILED` |
-| `RUNNING` | Execution deadline exceeded and recovery exhausted | `TIMEOUT` |
-| `QUEUED` | Explicit cancellation | `CANCELLED` |
-| `WAITING_ACK` | ACK deadline exceeded | Recovery procedure |
-| unresolved Task | `TASK_STATUS` received | Reconcile according to reported state |
+| Applicable non-terminal state | Final timeout declared | `TIMEOUT` |
+| Applicable cancellable state | Explicit cancellation accepted | `CANCELLED` |
 
----
-
-# 15. Task Recovery State
-
-A Task does not require additional permanent states for every recovery
-condition.
-
-For example:
+The following is **not** a valid direct transition:
 
 ```text
 WAITING_ACK
     │
-    │ ACK timeout
+    │ ACK deadline exceeded
     ▼
-Recovery procedure
-    │
-    ├── PONG
-    │     │
-    │     ▼
-    │  TASK_STATUS_QUERY
-    │
-    └── communication unavailable
-          │
-          ▼
-       await reconnection
+TIMEOUT
 ```
 
-The underlying Task state remains logically distinct from the communication
-recovery state.
+An acknowledgement deadline first creates a recovery condition.
 
-This prevents states such as:
+The system should attempt to establish whether the Task was accepted before
+declaring a final timeout.
+
+Communication loss does not itself create:
 
 ```text
-TASK_WAITING_ACK_BUT_CONNECTION_LOST
-TASK_RUNNING_BUT_CONNECTION_LOST
-TASK_QUEUED_BUT_SYNCHRONIZING
+RUNNING → FAILED
 ```
 
-from unnecessarily becoming part of the Task state machine.
+or:
+
+```text
+RUNNING → TIMEOUT
+```
 
 ---
 
-# 16. Communication Loss During Task Execution
+# 16. Task State Semantics
 
-## 16.1 Running Task
+## `PENDING`
 
-When:
+The Task exists but has not yet been dispatched.
 
-```text
-Task = RUNNING
-```
-
-and communication is lost:
-
-```text
-Task
-RUNNING
-   │
-   │ communication loss
-   ▼
-RUNNING
-```
-
-The Task does not automatically become `FAILED`.
-
-If execution completes:
-
-```text
-RUNNING
-   │
-   │ local completion
-   ▼
-COMPLETED
-```
-
-The Result is retained locally until communication resumes.
+The Agent has not necessarily received the Task.
 
 ---
 
-## 16.2 Queued Task
+## `WAITING_ACK`
 
-When:
+The Task has been dispatched and the C2 is waiting for Agent acceptance.
 
-```text
-Task = QUEUED
-```
+`TASK_ACK` means acceptance.
 
-and communication becomes unavailable:
+It does not mean:
 
 ```text
-QUEUED
-   │
-   │ communication loss
-   ▼
-QUEUED
+execution started
+execution succeeded
+execution completed
 ```
-
-The Agent MUST NOT normally begin new queued C2-originated work while in
-communication-loss recovery.
 
 ---
 
-# 17. Task Recovery After Reconnection
+## `QUEUED`
 
-After reconnection:
+The Agent has accepted the Task but execution has not started.
 
-```text
-new Session
-     │
-     ▼
-SYNCHRONIZING
-     │
-     ▼
-Task reconciliation
-     │
-     ├── Task completed remotely
-     ├── Task still running
-     ├── Task still queued
-     ├── Task failed
-     └── Task unknown
-```
-
-Examples:
-
-### C2 says RUNNING, Agent says COMPLETED
-
-```text
-C2:    T001 = RUNNING
-Agent: T001 = COMPLETED, R001 exists
-
-             ↓
-
-C2 reconciles
-             ↓
-
-T001 = COMPLETED
-R001 persisted
-```
-
-### C2 says PENDING, Agent says UNKNOWN
-
-The C2 may dispatch the Task again, subject to duplicate-protection rules.
-
-### Agent reports a Task unknown to C2
-
-The C2 MUST NOT silently create a new Task merely because the Agent reports
-one.
-
-It is treated as an anomalous or unresolved condition requiring reconciliation.
+The exact scheduling and concurrency policy remain implementation decisions.
 
 ---
 
-# 18. Result State
+## `RUNNING`
 
-The Result lifecycle is intentionally simpler than the Task lifecycle.
+The Agent is currently executing the Task.
 
-A Result can conceptually be:
+`RUNNING` is a Task state, not an Agent state.
+
+---
+
+## `COMPLETED`
+
+The requested operation has successfully completed.
+
+A successful Task will normally have an associated Result.
+
+The Result may be delivered later if communication is temporarily unavailable.
+
+---
+
+## `FAILED`
+
+Execution did not complete successfully.
+
+Execution failure is distinct from communication failure.
+
+---
+
+## `TIMEOUT`
+
+The system has declared that an applicable deadline has been exceeded and
+the Task has reached a final timeout condition.
+
+A timeout does not necessarily prove that Agent-side execution stopped.
+
+The exact timeout and post-timeout policy remains an implementation decision.
+
+---
+
+## `CANCELLED`
+
+The Task was explicitly cancelled and the cancellation was accepted.
+
+Cancellation semantics depend on the execution stage and command capabilities.
+
+In particular, cancelling a `RUNNING` Task cannot be assumed to terminate its
+execution unless the Agent supports safe interruption.
+
+---
+
+# 17. Task Recovery and `UNKNOWN`
+
+`UNKNOWN` is deliberately excluded from the authoritative Task state model.
+
+It represents uncertainty about the current Task state.
+
+Recovery should attempt to obtain evidence such as:
 
 ```text
-PENDING
-RECEIVED
-VERIFIED
+PING / PONG
+TASK_STATUS_QUERY / TASK_STATUS
+reconnection
+synchronization
+```
+
+The Task then returns to one of its authoritative states.
+
+`UNKNOWN` MUST NOT be treated as equivalent to:
+
+```text
 FAILED
+COMPLETED
+CANCELLED
 ```
 
-However, the exact Result state model is still implementation-dependent.
+It MUST NOT by itself authorize redispatch.
 
-The important distinction is between:
+Detailed recovery behavior is defined in `task-lifecycle.md` and
+`reconnection-and-synchronization.md`.
+
+---
+
+# 18. Communication Loss During Task Execution
+
+Communication and Task execution are independent.
+
+If communication is lost while a Task is `RUNNING`, the Task's execution state
+does not automatically change.
+
+Therefore, communication loss alone MUST NOT cause:
+
+```text
+RUNNING → FAILED
+RUNNING → TIMEOUT
+RUNNING → CANCELLED
+```
+
+The Agent may continue executing the Task and later produce a Result.
+
+Likewise, a `QUEUED` Task may remain `QUEUED` while communication is
+unavailable.
+
+The Agent normally does not begin new queued C2-originated work until
+communication recovery and synchronization have completed.
+
+Detailed recovery behavior is defined elsewhere.
+
+---
+
+# 19. Result
+
+The Result is related to the Task state machine but has its own lifecycle
+concerns.
+
+This document does **not** define an authoritative Result state enumeration.
+
+The important invariant is:
 
 ```text
 Task execution state
-```
-
-and:
-
-```text
+        ≠
 Result delivery state
 ```
 
-For example:
+A Task may be complete while its Result has not yet been delivered to the C2.
+
+The absence of a received Result MUST NOT automatically change:
 
 ```text
-Task T001 = COMPLETED
-
-Result R001
-    └── delivery = PENDING
+COMPLETED → FAILED
 ```
 
-is valid.
-
-The Task is complete even though its Result has not yet reached the C2.
-
----
-
-# 19. Result Delivery
-
-The normal path is:
-
-```text
-Task execution
-      │
-      ▼
-Result produced
-      │
-      ├── C2 reachable ───────► Result transmitted
-      │
-      └── C2 unreachable
-               │
-               ▼
-        Result retained locally
-               │
-               │ reconnect
-               ▼
-        Result synchronized
-```
-
-A Result MUST retain its `result_id` during retransmission.
-
-Therefore retransmission does not create a new logical Result.
+Result lifecycle details belong to the Result/data model and synchronization
+documents.
 
 ---
 
@@ -736,26 +756,16 @@ The logical File Transfer lifecycle is:
 ```text
 PENDING
    │
-   │ FILE_START
+   │ transfer starts
    ▼
 TRANSFERRING
    │
-   │ FILE_END + successful verification
+   │ transfer completes and verification succeeds
    ▼
 COMPLETED
 ```
 
-Failure may produce:
-
-```text
-FAILED
-```
-
-Cancellation may produce:
-
-```text
-CANCELLED
-```
+Failure and cancellation may terminate an active transfer.
 
 ---
 
@@ -771,84 +781,75 @@ CANCELLED
 
 ---
 
-## 20.2 State Diagram
+## 20.2 Normative State Diagram
 
 ```text
 PENDING
    │
-   │ FILE_START
+   │ transfer starts
    ▼
 TRANSFERRING
   /      \
  │        │
- │        │ FILE_END + verification
+ │        │ transfer complete
+ │        │ + verification succeeds
  │        ▼
  │    COMPLETED
  │
- ├── transfer failure ───► FAILED
+ ├── transfer failure ───────► FAILED
  │
- └── explicit cancellation ─► CANCELLED
+ └── explicit cancellation ──► CANCELLED
 ```
 
-`FILE_CHUNK` does not create a new state.
+Transfer chunks represent progress within `TRANSFERRING`; they do not create
+additional states.
 
-It represents progress within `TRANSFERRING`.
+Detailed file-transfer behavior belongs in `file-transfer.md`.
 
 ---
 
-# 21. Cross-State Constraints
+# 21. Cross-State Invariants
 
 The following constraints apply across the state machines.
 
 ## 21.1 Session
 
-```text
 A Session cannot be revived.
-```
 
 A new connection creates a new Session.
 
 ## 21.2 Agent
 
-```text
 Agent identity survives Session changes.
-```
 
 ## 21.3 Task
 
-```text
 Tasks belong to Agents, not Sessions.
-```
 
 A Task may therefore span multiple Sessions.
 
 ## 21.4 Result
 
-```text
 Results belong to Tasks.
-```
 
 A Result may be produced during one Session and transmitted during another.
 
 ## 21.5 Communication
 
 ```text
-Communication failure does not equal execution failure.
+Communication failure ≠ execution failure
 ```
 
 ## 21.6 Synchronization
 
-```text
 Synchronization reconciles state.
+
 It does not restore a previous Session.
-```
 
 ## 21.7 Queued Work
 
-```text
-Queued work normally waits while communication is unavailable
-and resumes only after synchronization.
-```
+Queued work normally waits while communication is unavailable and resumes
+only after synchronization.
 
 ## 21.8 Duplicate Protection
 
@@ -862,187 +863,69 @@ duplicate unsafe operation
 
 ---
 
-# 22. State Consistency Examples
+# 22. Invalid State Transitions
 
-## 22.1 Normal Execution
+The following transitions are prohibited.
 
-```text
-Agent
-  Health: ALIVE
-  Communication: CONNECTED
-  Activity: IDLE
-
-T001
-  PENDING
-    ↓
-  WAITING_ACK
-    ↓
-  QUEUED
-    ↓
-  RUNNING
-    ↓
-  COMPLETED
-```
-
----
-
-## 22.2 Running Task During Communication Loss
+## Session
 
 ```text
-Agent
-  Health: ALIVE
-  Communication: CONNECTED
-  Activity: BUSY
-
-Session S042
-  CONNECTED
-
-T001
-  RUNNING
-
-        │
-        │ connection lost
-        ▼
-
-Session S042
-  DISCONNECTED
-
-Agent
-  Communication: OFFLINE_WAIT
-
-T001
-  RUNNING
-
-        │
-        │ local completion
-        ▼
-
-T001
-  COMPLETED
-
-R001
-  retained locally
-```
-
-Later:
-
-```text
-S043
-  new Session
-
-Agent
-  CONNECTING
-      ↓
-  SYNCHRONIZING
-      ↓
-  CONNECTED
-
-R001
-  transmitted
-```
-
----
-
-## 22.3 Queued Tasks During Outage
-
-```text
-T001 = RUNNING
-T002 = QUEUED
-T003 = QUEUED
-
-communication lost
-
-T001 = RUNNING
-T002 = QUEUED
-T003 = QUEUED
-```
-
-The Agent does not start:
-
-```text
-T002
-T003
-```
-
-until communication recovery and synchronization allow normal operation.
-
----
-
-# 23. Invalid State Transitions
-
-The following transitions are prohibited:
-
-```text
-Session:
 DISCONNECTED → CONNECTED
 CLOSED       → CONNECTED
-
-Task:
-COMPLETED → RUNNING
-FAILED    → RUNNING
-CANCELLED → RUNNING
-
-Agent:
-communication loss → TERMINATED
-                   without confirmed termination
-
-Result:
-duplicate result_id → second logical Result
 ```
 
-Other transitions may also be rejected according to the final implementation
-and validation rules.
+A new connection creates a new Session.
+
+## Task
+
+```text
+COMPLETED → RUNNING
+FAILED    → RUNNING
+TIMEOUT   → RUNNING
+CANCELLED → RUNNING
+```
+
+A terminal Task does not silently return to an active lifecycle state.
+
+## Agent
+
+```text
+communication loss → TERMINATED
+```
+
+is prohibited without confirmed termination evidence.
+
+## Result
+
+Duplicate `result_id` values MUST NOT create multiple logical Results.
 
 ---
 
-# 24. State Persistence
+# 23. State Persistence
 
 State should be persisted according to the importance and lifetime of the
 state.
 
-The C2 should retain historical states for:
+The C2 should retain historical state for:
 
 ```text
+Agents
 Sessions
 Tasks
 Results
 File Transfers
-Agents
 ```
 
 Runtime-only information may remain in memory where appropriate.
 
-A restart MUST NOT require the system to reinterpret old Sessions as active.
+A restart MUST NOT reinterpret historical Sessions as active.
 
-For example:
-
-```text
-Before restart:
-
-S042 = DISCONNECTED
-
-After restart:
-
-S042 = DISCONNECTED
-```
-
-If the Agent reconnects:
-
-```text
-new connection
-    ↓
-S043
-```
-
-not:
-
-```text
-S042 → CONNECTED
-```
+If an Agent reconnects after a C2 restart, the connection establishes a new
+Session rather than reopening a historical Session.
 
 ---
 
-# 25. Synchronization Invariants
+# 24. Synchronization Invariants
 
 Synchronization MUST preserve the following invariants:
 
@@ -1069,49 +952,57 @@ Synchronization MUST preserve the following invariants:
 9. Duplicate protocol messages must not create duplicate logical entities.
 ```
 
+Detailed reconciliation rules are defined in
+`reconnection-and-synchronization.md`.
+
 ---
 
-# 26. Relationship to Other Documents
-
-This document should remain focused on **state machines**.
+# 25. Relationship to Other Documents
 
 | Document | Responsibility |
 |---|---|
-| `data-model.md` | Entities, attributes, relationships |
-| `state-machines.md` | States and state transitions |
+| `data-model.md` | Entities, attributes, relationships and persistence model |
+| `state-machines.md` | **Authoritative states and valid logical transitions** |
 | `protocol.md` | Protocol messages and wire-level vocabulary |
-| `protocol-state-transition.md` | Message → state transition mapping |
-| `reconnection-and-synchronization.md` | Recovery and reconciliation workflow |
-| `task-lifecycle.md` | Detailed Task lifecycle |
-| `file-transfer.md` | Detailed file-transfer behavior |
-| `network-architecture.md` | Network topology and communication architecture |
-| `ARCHITECTURE.md` | Overall software architecture |
+| `protocol-state-transition.md` | Mapping protocol messages to state transitions |
+| `reconnection-and-synchronization.md` | Recovery and cross-side reconciliation |
+| `task-lifecycle.md` | Detailed Task lifecycle, recovery, retry and cancellation behavior |
+| `file-transfer.md` | Detailed File Transfer behavior |
+| `testing-strategy.md` | Verification of state machines and transitions |
+| `DECISIONS.md` | Final architectural decisions |
 
-The same transition should not be redefined differently in those documents.
+Other documents MUST NOT redefine a conflicting set of states.
 
-Where a conflict exists, this document is authoritative for **logical state
-definitions and valid state transitions**, while
-`protocol-state-transition.md` is authoritative for the protocol mechanism
-that triggers them.
+Where a conflict exists:
+
+- this document is authoritative for **logical state definitions and valid
+  transitions**;
+- `protocol.md` is authoritative for protocol message definitions;
+- `protocol-state-transition.md` is authoritative for how protocol messages
+  trigger state changes;
+- `reconnection-and-synchronization.md` is authoritative for reconciliation
+  workflow.
 
 ---
 
-# 27. Open Questions
+# 26. Open Questions
 
 The following implementation details remain to be finalized:
 
 - exact liveness thresholds;
-- exact retry counts and delays;
 - Beacon interval;
 - reconnect interval;
-- exact Result states;
-- whether Result verification requires a separate state;
+- exact Result lifecycle, if a separate Result state model is required;
 - Task cancellation semantics;
+- whether running Tasks can be interrupted;
 - concurrent Task execution limits;
 - exact synchronization conflict-resolution rules;
 - persistence requirements for intermediate states;
 - File Transfer resume behavior;
-- timeout values;
-- duplicate identifier retention period.
+- acknowledgement timeout;
+- execution timeout;
+- post-timeout handling;
+- duplicate identifier retention period;
+- exact scheduling and queue policy.
 
 These decisions should be recorded in `DECISIONS.md` when finalized.
