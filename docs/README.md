@@ -4,7 +4,7 @@ This directory contains the detailed documentation of the **C2-AUTOMATED** proje
 
 The purpose of this documentation is not to create as many files as possible. Each document has a specific role and covers a distinct aspect of the project. The objective is to make the project easier to understand, implement, test, review, and maintain.
 
-The documentation is organized by **subject** rather than by development phase. This allows a contributor or reviewer to directly find the information they are looking for without having to search through a single large document.
+The documentation is organized by **subject and responsibility** rather than by development phase. This allows a contributor or reviewer to directly find the information they are looking for without having to search through a single large document.
 
 ---
 
@@ -18,7 +18,7 @@ The following documents provide the main entry points into the project:
 - [Architecture Decisions](../DECISIONS.md)
 - [Contribution Guidelines](../CONTRIBUTING.md)
 
-This directory contains the more detailed technical documentation referenced by these main documents.
+This directory contains the detailed technical specifications referenced by these main documents.
 
 ---
 
@@ -27,44 +27,51 @@ This directory contains the more detailed technical documentation referenced by 
 ```text
 docs/
 ├── README.md
-├── protocol.md
-├── task-lifecycle.md
-├── file-transfer.md
 ├── data-model.md
-├── testing-strategy.md
-├── requirements-mapping.md
-├── threat-model.md
+├── state-machines.md
+├── authorative-task-state-model.md
+├── protocol.md
+├── protocol-state-transition.md
+├── reconnection-and-synchronization.md
+├── task-lifecycle.md
 ├── network-architecture.md
-├── kill-chain-analysis.md
-└── countermeasures.md
+├── file-transfer.md
+├── testing-strategy.md
+├── threat-model.md
+├── countermeasures.md
+├── requirements-mapping.md
+└── kill-chain-analysis.md
 ```
 
-Some documents are already drafted, while others will be completed as the corresponding design decisions and implementation become more precise.
+Some documents describe relatively stable design decisions, while others intentionally contain open points that will be refined during implementation.
+
+The status of each document is listed at the end of this file.
 
 ---
 
-## Quick start
+# Quick Start
 
 This section provides the recommended reading order for someone discovering the project for the first time.
 
-### 1. Start with the repository overview
+## 1. Start with the repository overview
 
 Read [`../README.md`](../README.md) first.
 
-It provides the project's:
+It provides:
 
-- purpose;
+- project purpose;
 - objectives;
 - major features;
 - high-level architecture;
 - repository structure;
-- current development status.
+- development status;
+- links to detailed documentation.
 
 This should provide enough context before going into the technical documentation.
 
 ---
 
-### 2. Understand the global architecture
+## 2. Understand the global architecture
 
 Next, read [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
@@ -80,7 +87,9 @@ C2 Server
     ├── Core
     ├── Protocol
     ├── Transport
-    └── Storage
+    ├── Storage
+    ├── File Management
+    └── Synchronization
             │
             ▼
           Agent(s)
@@ -90,110 +99,268 @@ At this stage, focus on understanding **what each component is responsible for**
 
 ---
 
-### 3. Understand the communication model
+## 3. Understand the domain model and state machines
 
-Read [`protocol.md`](protocol.md) to understand how the C2 and agents communicate.
+Read:
 
-Then consult [`network-architecture.md`](network-architecture.md) once it is available to understand how those communications are represented at the network level.
+- [`data-model.md`](data-model.md)
+- [`state-machines.md`](state-machines.md)
+- [`authorative-task-state-model.md`](authorative-task-state-model.md)
 
-These provide two complementary views:
+These documents establish the conceptual foundation of the system.
 
-```text
-Protocol
-"What information is exchanged?"
-
-Network Architecture
-"Where and through which communication path is it exchanged?"
-```
-
----
-
-### 4. Understand the main workflows
-
-The next recommended documents are:
-
-[`task-lifecycle.md`](task-lifecycle.md)
-
-Explains how a task moves through the system.
-
-[`file-transfer.md`](file-transfer.md)
-
-Explains how files are transferred and stored.
-
-Together, these documents describe two of the main workflows of the project:
-
-```text
-Task
-C2 → Agent → Execution → Result → C2
-
-File Transfer
-C2 / Agent → Start → Chunks → End → Integrity Check → Storage
-```
-
----
-
-### 5. Understand the data behind those workflows
-
-Read [`data-model.md`](data-model.md).
-
-This explains the entities involved in the previous workflows and how they relate:
+The data model explains entities such as:
 
 ```text
 Agent
   │
   ├── Session
-  │
   ├── Task
   │    └── Result
   │
   └── File Transfer
 ```
 
-This provides the conceptual foundation for the persistence layer.
+The general state-machine specification defines the state machines used throughout the system.
 
----
-
-### 6. Understand security considerations
-
-Once the architecture and workflows are understood, read [`../SECURITY.md`](../SECURITY.md).
-
-Then consult:
-
-- [`threat-model.md`](threat-model.md) for identified threats;
-- [`kill-chain-analysis.md`](kill-chain-analysis.md) for the Kill Chain perspective;
-- [`countermeasures.md`](countermeasures.md) for the controls used to mitigate identified risks.
-
-These documents form a security-analysis chain:
+The **Authoritative Task State Model** provides the dedicated normative definition of Task states and transitions:
 
 ```text
-Architecture
-     ↓
-Threats
-     ↓
-Kill Chain Analysis
-     ↓
-Countermeasures
-     ↓
-Validation
+PENDING
+    ↓
+WAITING_ACK
+    ↓
+QUEUED
+    ↓
+RUNNING
+    ├──→ COMPLETED
+    ├──→ FAILED
+    ├──→ TIMEOUT
+    └──→ CANCELLED
+```
+
+The Task state model should be treated as the authoritative reference whenever another document needs to describe Task lifecycle states.
+
+Important distinctions include:
+
+```text
+Session state
+        ≠
+Agent communication state
+        ≠
+Agent health
+        ≠
+Agent activity
+        ≠
+Task state
 ```
 
 ---
 
-### 7. Understand how the project is validated
+## 4. Understand the communication protocol
+
+Read [`protocol.md`](protocol.md).
+
+This defines the logical messages exchanged between the C2 and agents.
+
+Then read [`protocol-state-transition.md`](protocol-state-transition.md).
+
+These documents provide complementary views:
+
+```text
+protocol.md
+"What information is exchanged?"
+
+        ↓
+
+protocol-state-transition.md
+"Which protocol events affect which system states?"
+```
+
+When Task-related protocol messages are involved, consult [`authorative-task-state-model.md`](authorative-task-state-model.md) for the authoritative Task-state semantics.
+
+---
+
+## 5. Understand reconnection and synchronization
+
+Read [`reconnection-and-synchronization.md`](reconnection-and-synchronization.md).
+
+This document explains what happens when an Agent:
+
+- connects for the first time;
+- reconnects after communication loss;
+- has pending tasks;
+- has results that have not yet been delivered;
+- has state that may differ from the C2's recorded state.
+
+The fundamental model is:
+
+```text
+New connection
+      ↓
+New Session
+      ↓
+Session CONNECTED
+      ↓
+REGISTER
+      ↓
+Communication SYNCHRONIZING
+      ↓
+State reconciliation
+      ↓
+SYNC_COMPLETE
+      ↓
+Communication CONNECTED
+```
+
+A previous disconnected Session is never reopened.
+
+---
+
+## 6. Understand the main workflows
+
+The next documents describe the main operational workflows.
+
+### Tasks
+
+[`task-lifecycle.md`](task-lifecycle.md)
+
+Explains how a Task is:
+
+- created;
+- acknowledged;
+- queued;
+- executed;
+- completed;
+- failed;
+- timed out;
+- cancelled;
+- recovered.
+
+For the exact normative Task states and transition rules, [`authorative-task-state-model.md`](authorative-task-state-model.md) is authoritative.
+
+The two documents therefore have different roles:
+
+| Document | Role |
+|---|---|
+| `authorative-task-state-model.md` | Authoritative Task states and transitions |
+| `task-lifecycle.md` | Operational Task workflow, recovery, persistence, and execution behavior |
+
+### File transfers
+
+[`file-transfer.md`](file-transfer.md)
+
+Explains how files are transferred independently from ordinary Task Results:
+
+```text
+FILE_START
+    ↓
+FILE_CHUNK
+    ↓
+FILE_CHUNK
+    ↓
+...
+    ↓
+FILE_END
+    ↓
+Reconstruction
+    ↓
+Integrity verification
+    ↓
+Storage
+```
+
+---
+
+## 7. Understand the network architecture
+
+Read [`network-architecture.md`](network-architecture.md).
+
+This document complements the logical protocol specification by describing the network-level architecture.
+
+The distinction is:
+
+```text
+Protocol
+"What is exchanged?"
+
+Network Architecture
+"Where and through which communication path?"
+```
+
+It covers:
+
+- connection direction;
+- TCP/TLS transport;
+- network zones;
+- trust boundaries;
+- addressing;
+- endpoints;
+- registration;
+- synchronization;
+- multi-agent communication;
+- laboratory deployment.
+
+---
+
+## 8. Understand security
+
+Start with [`../SECURITY.md`](../SECURITY.md).
+
+This provides the global security baseline.
+
+Then read:
+
+- [`threat-model.md`](threat-model.md);
+- [`countermeasures.md`](countermeasures.md);
+- [`kill-chain-analysis.md`](kill-chain-analysis.md).
+
+These documents have different purposes:
+
+```text
+SECURITY.md
+Security principles and boundaries
+        ↓
+Threat Model
+What can go wrong?
+        ↓
+Kill Chain Analysis
+How capabilities map to the analytical model
+        ↓
+Countermeasures
+How identified risks are reduced
+        ↓
+Testing Strategy
+How controls and behavior are validated
+```
+
+---
+
+## 9. Understand validation and testing
 
 Read [`testing-strategy.md`](testing-strategy.md).
 
 This explains how the different components and workflows are tested, from individual modules through complete C2 ↔ Agent interactions.
 
-The goal is to understand not only **what is implemented**, but also **how its correctness and security are demonstrated**.
+The objective is to demonstrate not only:
+
+> **What is implemented?**
+
+but also:
+
+> **Does the implementation behave according to the documented design?**
+
+and:
+
+> **Are the relevant security properties being validated?**
 
 ---
 
-### 8. Check requirement coverage
+## 10. Check requirement coverage
 
 Finally, read [`requirements-mapping.md`](requirements-mapping.md).
 
-This document connects the school requirements to:
+This document connects the academic project requirements to:
 
 ```text
 Requirement
@@ -211,41 +378,53 @@ It is particularly useful during project reviews and before the final submission
 
 ---
 
-### Recommended reading order
+# Recommended Reading Order
 
-For someone who wants the shortest useful path through the documentation:
+For someone who wants the most useful path through the documentation:
 
 ```text
-1. ../README.md
+1.  ../README.md
         ↓
-2. ../ARCHITECTURE.md
+2.  ../ARCHITECTURE.md
         ↓
-3. protocol.md
+3.  data-model.md
         ↓
-4. task-lifecycle.md
+4.  state-machines.md
         ↓
-5. file-transfer.md
+5.  authorative-task-state-model.md
         ↓
-6. data-model.md
+6.  protocol.md
         ↓
-7. ../SECURITY.md
+7.  protocol-state-transition.md
         ↓
-8. threat-model.md
+8.  reconnection-and-synchronization.md
         ↓
-9. kill-chain-analysis.md
+9.  task-lifecycle.md
         ↓
-10. countermeasures.md
+10. file-transfer.md
         ↓
-11. testing-strategy.md
+11. network-architecture.md
         ↓
-12. requirements-mapping.md
+12. ../SECURITY.md
+        ↓
+13. threat-model.md
+        ↓
+14. countermeasures.md
+        ↓
+15. kill-chain-analysis.md
+        ↓
+16. testing-strategy.md
+        ↓
+17. requirements-mapping.md
 ```
 
-Not every reader needs to follow the complete sequence. The navigation table below can be used to jump directly to a particular topic.
+Not every reader needs to follow the complete sequence.
+
+The navigation tables below can be used to jump directly to a particular topic.
 
 ---
 
-## How to use this documentation
+# How to Use This Documentation
 
 This documentation serves three main purposes:
 
@@ -256,18 +435,20 @@ This documentation serves three main purposes:
 When implementing a feature, the recommended approach is:
 
 1. Check `ARCHITECTURE.md` to understand where the feature belongs.
-2. Check the relevant detailed document in `docs/`.
-3. Check `DECISIONS.md` for existing architectural decisions or open points.
-4. Implement the feature.
-5. Update the relevant documentation if the implementation changes the design.
-6. Add or update the corresponding tests.
-7. Update `requirements-mapping.md` when the feature addresses a project requirement.
+2. Check `data-model.md` and `state-machines.md` if the feature introduces or modifies entities or states.
+3. If the feature concerns Tasks, check `authorative-task-state-model.md`.
+4. Check the relevant detailed specification in `docs/`.
+5. Check `DECISIONS.md` for existing architectural decisions or open points.
+6. Implement the feature.
+7. Add or update the corresponding tests.
+8. Update the relevant documentation if the implementation changes the design.
+9. Update `requirements-mapping.md` when the feature addresses a project requirement.
 
 Documentation should therefore be consulted throughout development, not only before the final submission.
 
 ---
 
-## Documentation source of truth
+# Documentation Source of Truth
 
 When information appears to be related across multiple documents, each document has a defined scope.
 
@@ -276,14 +457,18 @@ When information appears to be related across multiple documents, each document 
 | Global system architecture | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) |
 | Architectural decisions | [`../DECISIONS.md`](../DECISIONS.md) |
 | Security principles and boundaries | [`../SECURITY.md`](../SECURITY.md) |
-| Protocol contract | [`protocol.md`](protocol.md) |
-| Task states and lifecycle | [`task-lifecycle.md`](task-lifecycle.md) |
-| File-transfer behavior | [`file-transfer.md`](file-transfer.md) |
 | Domain entities and relationships | [`data-model.md`](data-model.md) |
+| General state definitions and transitions | [`state-machines.md`](state-machines.md) |
+| **Authoritative Task states and transitions** | [`authorative-task-state-model.md`](authorative-task-state-model.md) |
+| Protocol contract | [`protocol.md`](protocol.md) |
+| Protocol events and state transitions | [`protocol-state-transition.md`](protocol-state-transition.md) |
+| Reconnection and synchronization | [`reconnection-and-synchronization.md`](reconnection-and-synchronization.md) |
+| Task operational lifecycle | [`task-lifecycle.md`](task-lifecycle.md) |
 | Network topology | [`network-architecture.md`](network-architecture.md) |
+| File-transfer behavior | [`file-transfer.md`](file-transfer.md) |
 | Threats | [`threat-model.md`](threat-model.md) |
-| Kill Chain analysis | [`kill-chain-analysis.md`](kill-chain-analysis.md) |
 | Countermeasures | [`countermeasures.md`](countermeasures.md) |
+| Kill Chain analysis | [`kill-chain-analysis.md`](kill-chain-analysis.md) |
 | Testing approach | [`testing-strategy.md`](testing-strategy.md) |
 | Requirement traceability | [`requirements-mapping.md`](requirements-mapping.md) |
 | Development workflow | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
@@ -294,9 +479,140 @@ When a detailed document needs to discuss a subject owned by another document, i
 
 ---
 
-## Documentation map
+# Documentation Map
 
-### `protocol.md`
+## `data-model.md`
+
+**Purpose:** Define the conceptual entities, relationships, identifiers, persistence concepts, and consistency rules of the system.
+
+This document covers:
+
+- Agent;
+- Session;
+- Task;
+- Result;
+- Message;
+- File Transfer;
+- Event;
+- identifiers;
+- relationships and cardinalities;
+- persistence;
+- runtime state;
+- reliability and offline operation;
+- consistency rules.
+
+**Look here for:** the conceptual data model.
+
+**Status:** Work in Progress.
+
+---
+
+## `state-machines.md`
+
+**Purpose:** Define the general state machines used throughout the system.
+
+This document covers:
+
+- Agent communication state;
+- Agent health;
+- Agent activity;
+- Session state;
+- general Task-state relationships;
+- Result-related state;
+- File-transfer state;
+- state-transition rules;
+- invalid transitions;
+- cross-state invariants;
+- synchronization invariants.
+
+Task-specific authoritative state semantics are maintained separately in [`authorative-task-state-model.md`](authorative-task-state-model.md).
+
+Important distinctions include:
+
+```text
+Session state
+        ≠
+Agent communication state
+        ≠
+Agent health
+        ≠
+Agent activity
+        ≠
+Task state
+```
+
+**Look here for:** the system-wide state-machine relationships and cross-state invariants.
+
+**Status:** Work in Progress.
+
+---
+
+## `authorative-task-state-model.md`
+
+**Purpose:** Define the authoritative Task state model used by the project.
+
+This document is the **normative source of truth for Task states and Task-state transitions**.
+
+The authoritative persistent Task states are:
+
+```text
+PENDING
+WAITING_ACK
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+TIMEOUT
+CANCELLED
+```
+
+Terminal states are:
+
+```text
+COMPLETED
+FAILED
+TIMEOUT
+CANCELLED
+```
+
+The normal lifecycle is:
+
+```text
+PENDING
+    ↓
+WAITING_ACK
+    ↓
+QUEUED
+    ↓
+RUNNING
+    ↓
+COMPLETED / FAILED
+```
+
+Additional transitions cover timeout and cancellation where applicable.
+
+This document also defines important Task semantics, including:
+
+- `TASK_ACK` meaning acceptance rather than completion;
+- Task ownership by Agent rather than Session;
+- Tasks spanning multiple Sessions;
+- communication loss versus Task failure;
+- timeout semantics;
+- recovery behavior;
+- `UNKNOWN` as a recovery/reporting condition rather than a persistent state;
+- Result association;
+- duplicate-task protection;
+- invalid transitions.
+
+**Look here for:** the exact authoritative Task state model.
+
+**Important:** Other documents may describe Task behavior, but they should not redefine the authoritative Task states independently.
+
+**Status:** Work in Progress.
+
+---
+
+## `protocol.md`
 
 **Purpose:** Define how the C2 server and agents communicate at the application level.
 
@@ -309,18 +625,41 @@ This document covers:
 - validation;
 - message correlation;
 - protocol versioning;
-- registration and beacon messages;
+- registration;
+- synchronization;
+- beacon and liveness messages;
 - task and result messages;
 - file-transfer messages;
 - error messages.
 
-This document answers questions such as:
+The protocol currently includes message categories such as:
 
-> What does a message exchanged between the C2 and an agent look like?
+```text
+REGISTER
+REGISTER_ACK
+SYNC_STATE
+SYNC_STATE_RESPONSE
+SYNC_COMPLETE
 
-> How does the receiver know what type of message it received?
+BEACON
+BEACON_ACK
+PING
+PONG
 
-> How are messages associated with an agent, task, or transfer?
+TASK
+TASK_ACK
+TASK_STATUS
+TASK_STATUS_QUERY
+RESULT
+
+FILE_START
+FILE_CHUNK
+FILE_END
+
+ERROR
+```
+
+For Task state semantics, this document defers to [`authorative-task-state-model.md`](authorative-task-state-model.md).
 
 **Look here for:** the logical communication contract between C2 and Agent.
 
@@ -328,127 +667,195 @@ This document answers questions such as:
 
 ---
 
-### `task-lifecycle.md`
+## `protocol-state-transition.md`
 
-**Purpose:** Describe how a task is created, transmitted, executed, and completed.
+**Purpose:** Define how protocol events interact with the system's state machines.
 
-This document covers:
-
-- task creation;
-- task identification;
-- task states;
-- task queues;
-- asynchronous execution;
-- task/result relationships;
-- task failures;
-- retries and recovery concepts;
-- task persistence;
-- traceability and logging.
-
-The current conceptual lifecycle is:
+This document bridges:
 
 ```text
-PENDING
-   ↓
- SENT
-   ↓
-RUNNING
-   ├──→ COMPLETED
-   └──→ FAILED
+Protocol messages
+        ↓
+Protocol events
+        ↓
+State-machine transitions
 ```
 
-This document also provides the place for documenting special task types whose lifecycle differs from a standard command, such as the currently unresolved `SELF_DESTRUCT` behavior.
+It clarifies, for example, that:
 
-**Look here for:** everything related to the lifecycle of a task.
+```text
+New connection
+    ↓
+New Session = CONNECTING
+    ↓
+Transport established
+    ↓
+Session = CONNECTED
+    ↓
+REGISTER
+    ↓
+Agent communication = SYNCHRONIZING
+    ↓
+Synchronization
+    ↓
+Agent communication = CONNECTED
+```
+
+In particular:
+
+- `REGISTER` does not establish the Session;
+- `REGISTER_ACK` does not cause `Session CONNECTING → CONNECTED`;
+- a new connection always creates a new Session;
+- Task-related transitions must remain consistent with the authoritative Task state model.
+
+**Look here for:** the relationship between protocol events and state transitions.
 
 **Status:** Work in Progress.
 
 ---
 
-### `file-transfer.md`
+## `reconnection-and-synchronization.md`
+
+**Purpose:** Define how the system recovers and reconciles state after communication interruptions.
+
+This document covers:
+
+- initial registration;
+- reconnection;
+- creation of new Sessions;
+- `previous_session_id`;
+- synchronization;
+- pending Tasks;
+- Task-state reconciliation;
+- pending Results;
+- duplicate protection;
+- recovery after C2 restart;
+- communication-state recovery.
+
+The fundamental principle is:
+
+> **A new connection creates a new Session; synchronization reconciles state across the new Session.**
+
+Task reconciliation must remain consistent with [`authorative-task-state-model.md`](authorative-task-state-model.md).
+
+**Look here for:** reconnect behavior, state recovery, and reconciliation.
+
+**Status:** Work in Progress.
+
+---
+
+## `task-lifecycle.md`
+
+**Purpose:** Describe the operational lifecycle of Tasks.
+
+This document explains how a Task is:
+
+- created;
+- dispatched;
+- acknowledged;
+- queued;
+- executed;
+- completed;
+- failed;
+- timed out;
+- cancelled;
+- recovered.
+
+It covers:
+
+- task creation;
+- task identification;
+- task queues;
+- asynchronous execution;
+- acknowledgement semantics;
+- task/result relationships;
+- failures;
+- timeouts;
+- cancellation;
+- recovery;
+- duplicate protection;
+- persistence;
+- traceability;
+- multi-agent operation.
+
+The exact Task states and legal transitions are defined by [`authorative-task-state-model.md`](authorative-task-state-model.md).
+
+The distinction is intentional:
+
+```text
+Authorative Task State Model
+        ↓
+"What states and transitions are valid?"
+
+Task Lifecycle
+        ↓
+"How does the Task behave operationally?"
+```
+
+**Look here for:** Task workflow, recovery, persistence, and execution behavior.
+
+**Status:** Work in Progress.
+
+---
+
+## `network-architecture.md`
+
+**Purpose:** Describe the network-level architecture of the project.
+
+This document focuses on:
+
+- network topology;
+- connection direction;
+- C2 server;
+- agents;
+- TCP/TLS transport;
+- trust boundaries;
+- network zones;
+- endpoints;
+- addressing;
+- registration;
+- synchronization;
+- multi-agent communication;
+- laboratory deployment.
+
+**Look here for:** network topology and communication paths.
+
+**Status:** Work in Progress.
+
+---
+
+## `file-transfer.md`
 
 **Purpose:** Define how files are transferred between the C2 server and agents.
 
 This document covers:
 
-- upload and download concepts;
 - transfer identifiers;
+- upload/download concepts;
 - transfer lifecycle;
-- `FILE_START`, `FILE_CHUNK`, and `FILE_END`;
+- `FILE_START`;
+- `FILE_CHUNK`;
+- `FILE_END`;
 - chunking;
-- temporary files;
-- file reconstruction;
+- temporary storage;
+- reconstruction;
 - integrity verification;
 - transfer failures;
 - cleanup;
-- interaction with tasks;
-- storage responsibilities;
-- large-file handling.
+- interaction with Tasks;
+- storage responsibilities.
 
-The document also distinguishes between:
-
-```text
-File Transfer Management
-        ↓
-Logical transfer state
-        ↓
-File Storage
-        ↓
-Physical file
-```
-
-This separation prevents file-transfer logic from becoming tightly coupled to a specific storage implementation.
-
-**Look here for:** anything concerning the movement and handling of file contents.
+**Look here for:** anything concerning movement, reconstruction, verification, and storage of file contents.
 
 **Status:** Work in Progress.
 
 ---
 
-### `data-model.md`
-
-**Purpose:** Describe the entities and relationships that exist within the system independently of their concrete database implementation.
-
-The document covers entities such as:
-
-- Agent;
-- Session;
-- Task;
-- Result;
-- Message;
-- File Transfer.
-
-It explains:
-
-- what each entity represents;
-- how entities are related;
-- which identifiers are used;
-- what information is persistent;
-- what information is temporary;
-- conceptual consistency rules;
-- the distinction between domain objects and database models.
-
-For example:
-
-```text
-Agent
- ├── Sessions
- ├── Tasks
- │    └── Results
- └── File Transfers
-```
-
-**Look here for:** entities, relationships, identifiers, and persistent data concepts.
-
-**Status:** Work in Progress.
-
----
-
-### `testing-strategy.md`
+## `testing-strategy.md`
 
 **Purpose:** Define how the project will be tested and validated.
 
-This document covers the different testing levels:
+This document covers:
 
 ```text
 Unit
@@ -462,46 +869,44 @@ C2 ↔ Agent
 End-to-End
 ```
 
-It also addresses testing of:
+It includes testing of:
 
+- state machines;
+- authoritative Task states;
+- registration and synchronization;
 - protocol handling;
-- session management;
-- task management;
-- result processing;
+- message routing;
+- sessions;
+- tasks;
+- results;
 - transport;
 - storage;
 - file transfers;
 - agent execution;
-- platform-specific behavior;
+- platform abstraction;
+- beacon/liveness;
+- persistence and restart;
 - security controls;
+- failure and recovery;
 - multi-agent operation;
-- regression;
-- failure handling.
+- regression.
 
-The objective is to make testing part of the architecture rather than something added only after implementation.
-
-**Look here for:** how a feature or subsystem should be validated.
+**Look here for:** how correctness, reliability, and security are validated.
 
 **Status:** Work in Progress.
 
 ---
 
-### `requirements-mapping.md`
+## `requirements-mapping.md`
 
-**Purpose:** Provide traceability between the school requirements and the project implementation.
+**Purpose:** Provide traceability between the academic project requirements and the project design, implementation, and validation.
 
-This document answers:
-
-> Where is each required feature addressed?
-
-For each requirement, it identifies where the corresponding design, implementation, and tests should be found.
-
-Typical relationships are:
+The document connects:
 
 ```text
 Requirement
     ↓
-Architecture
+Design
     ↓
 Implementation
     ↓
@@ -510,7 +915,7 @@ Test
 Validation
 ```
 
-It also distinguishes between statuses such as:
+It also distinguishes statuses such as:
 
 - Required;
 - Planned;
@@ -518,118 +923,66 @@ It also distinguishes between statuses such as:
 - Implemented;
 - Validated;
 - Bonus;
-- Open.
+- Open;
+- Accepted;
+- Out of Scope.
 
-**Look here for:** proof that a particular school requirement has been considered and where it is addressed.
+The authoritative Task state model is referenced when mapping Task-management requirements.
+
+**Look here for:** where each project requirement is addressed.
 
 **Status:** Work in Progress.
 
 ---
 
-### `threat-model.md`
+## `threat-model.md`
 
-**Purpose:** Identify the security threats that are relevant to the project before selecting countermeasures.
+**Purpose:** Identify the security threats relevant to the project.
 
-This document is intended to analyse areas such as:
+The threat model covers areas such as:
 
-- C2 server exposure;
-- agent exposure;
-- communication threats;
+- C2 exposure;
+- Agent impersonation;
 - authentication;
 - message manipulation;
-- unauthorized task execution;
-- session abuse;
+- replay;
+- malformed protocol messages;
+- unauthorized task creation;
+- duplicate task execution;
+- session confusion;
+- synchronization inconsistency;
 - file-transfer abuse;
 - storage exposure;
-- secrets and configuration;
-- logging and information leakage;
-- local compromise.
+- secrets;
+- logging;
+- availability;
+- unsafe command behavior.
 
-It should answer:
-
-> What can go wrong?
-
-and:
-
-> What assets or components are affected?
-
-The threat model provides the foundation for the dedicated countermeasure analysis.
-
-**Look here for:** threats, attack surfaces, affected assets, and security risks.
-
-**Status:** Planned.
-
----
-
-### `network-architecture.md`
-
-**Purpose:** Describe the network-level architecture of the project.
-
-This document will complement `ARCHITECTURE.md` by focusing specifically on communication paths and network relationships.
-
-It is intended to document:
-
-- C2 server;
-- agents;
-- operator interface;
-- communication channels;
-- transport;
-- TLS boundary;
-- logical network zones;
-- connection direction;
-- relevant trust boundaries;
-- network diagrams;
-- laboratory deployment assumptions.
-
-A simplified conceptual model is:
+It distinguishes:
 
 ```text
-              Operator
-                  │
-                  ▼
-          ┌───────────────┐
-          │   C2 Server   │
-          └───────┬───────┘
-                  │
-          Secure Transport
-                  │
-        ┌─────────┼─────────┐
-        ▼         ▼         ▼
-     Agent 1   Agent 2   Agent N
+Asset
+  ↓
+Attack Surface
+  ↓
+Threat
+  ↓
+Risk
+  ↓
+Security Requirement
 ```
 
-**Look here for:** network topology and communication paths.
+**Look here for:** what can go wrong and what is at risk.
 
-**Status:** Planned.
-
----
-
-### `kill-chain-analysis.md`
-
-**Purpose:** Analyse the project through the Cyber Kill Chain perspective.
-
-This document will map the relevant phases of the model to the capabilities and behaviours represented by the project.
-
-The objective is not to claim that the project implements every phase, but to identify:
-
-- which phases are represented;
-- which capabilities support them;
-- which phases are outside the project scope;
-- what defensive observations or controls are relevant.
-
-This analysis will provide a bridge between the technical architecture and the security analysis requested for the project.
-
-**Look here for:** Kill Chain mapping and analysis of project capabilities from that perspective.
-
-**Status:** Planned.
+**Status:** Work in Progress.
 
 ---
 
-### `countermeasures.md`
+## `countermeasures.md`
 
-**Purpose:** Document the security controls used to reduce the threats identified in the threat model and Kill Chain analysis.
+**Purpose:** Document the concrete security controls used to reduce identified threats.
 
-This document will connect:
+This document connects:
 
 ```text
 Threat
@@ -643,79 +996,113 @@ Implementation
 Validation
 ```
 
-It is intended to cover controls such as:
+Examples include:
 
 - TLS;
-- authentication;
+- Agent authentication;
 - message validation;
-- input validation;
-- path validation;
+- task validation;
+- executor boundaries;
 - controlled file workspaces;
-- file integrity verification;
-- access restrictions;
-- logging;
-- error handling;
-- secret management;
-- testing and monitoring.
-
-This document is deliberately separate from `SECURITY.md`:
-
-- `SECURITY.md` defines the project's general security principles and boundaries.
-- `countermeasures.md` will provide the more detailed threat-to-control analysis.
+- path validation;
+- file integrity;
+- resource limits;
+- logging and traceability;
+- configuration and secret protection;
+- persistence safeguards;
+- security regression testing;
+- authorized deployment.
 
 **Look here for:** how identified risks are mitigated.
 
-**Status:** Planned.
+**Status:** Work in Progress.
 
 ---
 
-## Where should I look?
+## `kill-chain-analysis.md`
 
-When looking for a specific type of information, use the following guide.
+**Purpose:** Analyse the project through the Cyber Kill Chain perspective.
+
+This document maps relevant project capabilities to the analytical Kill Chain model.
+
+The objective is not to claim that the project implements every phase, but to identify:
+
+- which phases are represented;
+- which capabilities relate to those phases;
+- which phases are outside project scope;
+- what defensive observations or controls are relevant.
+
+**Look here for:** Kill Chain mapping and security analysis from that perspective.
+
+**Status:** Planned / To be finalized.
+
+---
+
+# Where Should I Look?
 
 | Question | Document |
 |---|---|
+| What is the overall architecture? | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) |
+| Why was an architectural choice made? | [`../DECISIONS.md`](../DECISIONS.md) |
+| What entities exist? | [`data-model.md`](data-model.md) |
+| What general state machines exist? | [`state-machines.md`](state-machines.md) |
+| **What are the authoritative Task states?** | [`authorative-task-state-model.md`](authorative-task-state-model.md) |
 | How do C2 and Agent exchange messages? | [`protocol.md`](protocol.md) |
-| What does a protocol message contain? | [`protocol.md`](protocol.md) |
-| How does a task progress? | [`task-lifecycle.md`](task-lifecycle.md) |
-| How are tasks associated with results? | [`task-lifecycle.md`](task-lifecycle.md) / [`data-model.md`](data-model.md) |
+| How do protocol events affect state? | [`protocol-state-transition.md`](protocol-state-transition.md) |
+| What happens after reconnection? | [`reconnection-and-synchronization.md`](reconnection-and-synchronization.md) |
+| How does a Task behave operationally? | [`task-lifecycle.md`](task-lifecycle.md) |
+| How are Tasks associated with Results? | [`task-lifecycle.md`](task-lifecycle.md) / [`data-model.md`](data-model.md) |
 | How are files transferred? | [`file-transfer.md`](file-transfer.md) |
-| Where are transferred files stored? | [`file-transfer.md`](file-transfer.md) |
-| What entities exist in the system? | [`data-model.md`](data-model.md) |
-| How are entities related? | [`data-model.md`](data-model.md) |
-| How should a feature be tested? | [`testing-strategy.md`](testing-strategy.md) |
-| How is a school requirement addressed? | [`requirements-mapping.md`](requirements-mapping.md) |
-| What are the project threats? | [`threat-model.md`](threat-model.md) |
+| Where are files stored? | [`file-transfer.md`](file-transfer.md) |
 | What does the network look like? | [`network-architecture.md`](network-architecture.md) |
+| What are the security principles? | [`../SECURITY.md`](../SECURITY.md) |
+| What are the project threats? | [`threat-model.md`](threat-model.md) |
+| How are threats mitigated? | [`countermeasures.md`](countermeasures.md) |
 | How does the project map to the Kill Chain? | [`kill-chain-analysis.md`](kill-chain-analysis.md) |
-| How are identified threats mitigated? | [`countermeasures.md`](countermeasures.md) |
+| How should something be tested? | [`testing-strategy.md`](testing-strategy.md) |
+| How is a school requirement addressed? | [`requirements-mapping.md`](requirements-mapping.md) |
+| How should I contribute? | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
 
 ---
 
-## Relationship between the documents
+# Relationship Between the Documents
 
 The documents are complementary rather than independent.
 
-A typical feature can therefore be understood through several documents.
-
-For example, file transfer can be followed through:
+A typical Task-related feature can therefore be followed through:
 
 ```text
 Architecture
     ↓
-How the capability fits into the system
+Where the capability fits
+    ↓
+Data Model
+    ↓
+What entities and relationships are involved
+    ↓
+State Machines
+    ↓
+How system states interact
+    ↓
+Authorative Task State Model
+    ↓
+What Task states and transitions are authoritative
     ↓
 Protocol
     ↓
 Which messages are exchanged
     ↓
-File Transfer
+Protocol / State Transitions
     ↓
-How the transfer itself works
+How messages affect state
     ↓
-Data Model
+Task Lifecycle
     ↓
-What information is stored
+How the Task behaves operationally
+    ↓
+Synchronization
+    ↓
+How Task state is recovered across Sessions
     ↓
 Security / Threat Model
     ↓
@@ -723,7 +1110,7 @@ What can go wrong
     ↓
 Countermeasures
     ↓
-How the risks are reduced
+How risks are reduced
     ↓
 Testing Strategy
     ↓
@@ -738,30 +1125,33 @@ This structure avoids putting the same information into multiple documents while
 
 ---
 
-## When to update the documentation
+# When to Update the Documentation
 
 Documentation should be updated when a change affects:
 
 - architecture or module responsibilities;
 - communication or protocol behavior;
-- task or file-transfer workflows;
+- state machines;
+- Task states or Task transitions;
+- Task or file-transfer workflows;
 - persistent data or domain entities;
+- synchronization or reconnection behavior;
 - security controls or threat assumptions;
 - network topology;
 - testing strategy;
 - project requirements.
 
-The documentation should be updated as part of the same change rather than reconstructed at the end of the project.
+Documentation should be updated as part of the same change rather than reconstructed at the end of the project.
 
 When a change represents a significant architectural choice, the corresponding decision should also be recorded in [`../DECISIONS.md`](../DECISIONS.md).
 
 ---
 
-## Root-level documentation
+# Root-Level Documentation
 
 Some documentation deliberately remains outside this directory because it describes the project at a broader level.
 
-### [`../README.md`](../README.md)
+## [`../README.md`](../README.md)
 
 The main entry point to the repository.
 
@@ -776,11 +1166,9 @@ It provides:
 - development information;
 - links to detailed documentation.
 
-It should remain relatively concise and direct readers here for detailed technical documentation.
-
 ---
 
-### [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+## [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 The global architectural baseline.
 
@@ -793,14 +1181,13 @@ It describes:
 - protocol/transport separation;
 - storage architecture;
 - communication flows;
+- synchronization;
 - extensibility;
 - repository mapping.
 
-Detailed specifications are intentionally kept in the corresponding files under `docs/`.
-
 ---
 
-### [`../SECURITY.md`](../SECURITY.md)
+## [`../SECURITY.md`](../SECURITY.md)
 
 The project's global security baseline.
 
@@ -808,20 +1195,21 @@ It defines:
 
 - security principles;
 - secure communication;
+- Agent identity and authentication considerations;
 - protocol security;
 - execution boundaries;
 - file-transfer security;
-- integrity;
 - storage restrictions;
 - logging;
 - secrets/configuration;
-- laboratory scope.
+- resource and availability considerations;
+- authorized laboratory scope.
 
-Detailed threat and countermeasure analysis will be documented separately in `threat-model.md` and `countermeasures.md`.
+Detailed threat and countermeasure analysis is documented separately in `threat-model.md` and `countermeasures.md`.
 
 ---
 
-### [`../DECISIONS.md`](../DECISIONS.md)
+## [`../DECISIONS.md`](../DECISIONS.md)
 
 The project's decision history.
 
@@ -830,20 +1218,18 @@ It records important architectural choices and unresolved decisions using:
 - `ADR-*` for accepted architectural decisions;
 - `PRO-*` for proposed decisions that remain open.
 
-This prevents important design choices from disappearing into discussions or undocumented implementation changes.
-
-**Look here for:** why the architecture was designed this way.
+**Look here for:** why the architecture was designed this way and which decisions remain open.
 
 ---
 
-### [`../CONTRIBUTING.md`](../CONTRIBUTING.md)
+## [`../CONTRIBUTING.md`](../CONTRIBUTING.md)
 
 The project's development and contribution rules.
 
 It describes:
 
 - branching strategy;
-- when to use `feature/`, `fix/`, `docs/`, `test/`, and `refactor/`;
+- development workflow;
 - pull requests;
 - validation before merge;
 - documentation consistency;
@@ -854,23 +1240,24 @@ It describes:
 
 ---
 
-## Common terms
+# Common Terms
 
 | Term | Meaning |
 |---|---|
-| **C2** | Command and Control server responsible for managing agents and tasks. |
-| **Agent** | Client-side component that communicates with the C2 and executes authorized tasks. |
-| **Task** | An instruction created by the C2 for an agent to process. |
-| **Result** | Data returned by an agent in response to a task. |
-| **Session** | A communication context between an agent and the C2. |
+| **C2** | Command and Control server responsible for coordinating agents and tasks. |
+| **Agent** | Endpoint-side component that communicates with the C2 and executes authorized tasks. |
+| **Task** | An instruction created by the C2 for an Agent to process. |
+| **Result** | Data returned by an Agent in relation to a Task. |
+| **Session** | One concrete communication connection episode between an Agent and the C2. |
 | **Beacon** | Agent communication mechanism used to indicate availability and exchange pending information. |
-| **Transfer** | A logical file-transfer operation between the C2 and an agent. |
+| **Transfer** | A logical file-transfer operation between the C2 and an Agent. |
+| **Event** | A recorded occurrence representing a significant system activity or state change. |
 | **ADR** | Accepted Architecture Decision Record. |
 | **PRO** | Proposed decision that has not yet been finalized. |
 
 ---
 
-## Documentation status
+# Documentation Status
 
 Documentation is developed alongside the project rather than being postponed until the end.
 
@@ -878,16 +1265,20 @@ Current status:
 
 | Document | Status |
 |---|---|
-| `protocol.md` | Work in Progress |
-| `task-lifecycle.md` | Work in Progress |
-| `file-transfer.md` | Work in Progress |
 | `data-model.md` | Work in Progress |
+| `state-machines.md` | Work in Progress |
+| `authorative-task-state-model.md` | Work in Progress |
+| `protocol.md` | Work in Progress |
+| `protocol-state-transition.md` | Work in Progress |
+| `reconnection-and-synchronization.md` | Work in Progress |
+| `task-lifecycle.md` | Work in Progress |
+| `network-architecture.md` | Work in Progress |
+| `file-transfer.md` | Work in Progress |
 | `testing-strategy.md` | Work in Progress |
+| `threat-model.md` | Work in Progress |
+| `countermeasures.md` | Work in Progress |
 | `requirements-mapping.md` | Work in Progress |
-| `threat-model.md` | Planned |
-| `network-architecture.md` | Planned |
-| `kill-chain-analysis.md` | Planned |
-| `countermeasures.md` | Planned |
+| `kill-chain-analysis.md` | Planned / To be finalized |
 
 A document marked **Work in Progress** may contain intentionally unresolved design points. These should not be interpreted as finalized implementation decisions.
 
@@ -895,7 +1286,7 @@ Architectural choices that remain open should be recorded in [`../DECISIONS.md`]
 
 ---
 
-## Documentation principles
+# Documentation Principles
 
 The documentation follows a few simple principles:
 
@@ -903,10 +1294,10 @@ The documentation follows a few simple principles:
    Information should have a clear home.
 
 2. **Avoid unnecessary duplication.**  
-   A document may reference another document instead of reproducing its content.
+   A document should reference another document instead of reproducing its content whenever possible.
 
 3. **Separate architecture from detailed specifications.**  
-   High-level architecture belongs in `ARCHITECTURE.md`; detailed protocol, task, file-transfer, and testing specifications belong in `docs/`.
+   High-level architecture belongs in `ARCHITECTURE.md`; detailed protocol, state, Task, synchronization, file-transfer, network, and testing specifications belong in `docs/`.
 
 4. **Record important decisions.**  
    Open or significant architectural decisions belong in `DECISIONS.md`.
@@ -917,13 +1308,38 @@ The documentation follows a few simple principles:
 6. **Document uncertainty explicitly.**  
    Proposed behavior should not be presented as finalized behavior.
 
-The goal is therefore not to have a large number of Markdown files. The goal is to make the project's design understandable and traceable from requirements to architecture, implementation, security analysis, and testing.
+7. **Maintain a clear source of truth.**  
+   In particular, the authoritative Task state model should not be redefined in other documents.
+
+The goal is therefore not to have a large number of Markdown files.
+
+The goal is to make the project's design understandable and traceable from:
+
+```text
+Requirements
+    ↓
+Architecture
+    ↓
+Domain Model / State Machines
+    ↓
+Authoritative Task State Model
+    ↓
+Protocol / Workflows
+    ↓
+Implementation
+    ↓
+Security Analysis
+    ↓
+Testing
+    ↓
+Validation
+```
 
 ---
 
-## Navigation summary
+# Navigation Summary
 
-For most technical questions, the following path is sufficient:
+For most technical questions, the following map is sufficient:
 
 ```text
 README.md
@@ -931,17 +1347,56 @@ README.md
    ▼
 docs/README.md
    │
-   ├── Architecture      → ../ARCHITECTURE.md
-   ├── Protocol          → protocol.md
-   ├── Tasks             → task-lifecycle.md
-   ├── Files             → file-transfer.md
-   ├── Data              → data-model.md
-   ├── Testing           → testing-strategy.md
-   ├── Requirements      → requirements-mapping.md
-   ├── Threats           → threat-model.md
-   ├── Network           → network-architecture.md
-   ├── Kill Chain        → kill-chain-analysis.md
-   └── Countermeasures   → countermeasures.md
+   ├── Architecture
+   │      └── ../ARCHITECTURE.md
+   │
+   ├── Decisions
+   │      └── ../DECISIONS.md
+   │
+   ├── Data Model
+   │      └── data-model.md
+   │
+   ├── State Machines
+   │      └── state-machines.md
+   │
+   ├── Authoritative Task State Model
+   │      └── authorative-task-state-model.md
+   │
+   ├── Protocol
+   │      └── protocol.md
+   │
+   ├── Protocol / State Transitions
+   │      └── protocol-state-transition.md
+   │
+   ├── Reconnection / Synchronization
+   │      └── reconnection-and-synchronization.md
+   │
+   ├── Tasks
+   │      └── task-lifecycle.md
+   │
+   ├── Network
+   │      └── network-architecture.md
+   │
+   ├── File Transfer
+   │      └── file-transfer.md
+   │
+   ├── Security
+   │      └── ../SECURITY.md
+   │
+   ├── Threat Model
+   │      └── threat-model.md
+   │
+   ├── Countermeasures
+   │      └── countermeasures.md
+   │
+   ├── Kill Chain
+   │      └── kill-chain-analysis.md
+   │
+   ├── Testing
+   │      └── testing-strategy.md
+   │
+   └── Requirements
+          └── requirements-mapping.md
 ```
 
 This file should be the first place to look when navigating the detailed project documentation.
