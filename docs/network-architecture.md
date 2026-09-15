@@ -4,44 +4,55 @@
 
 This document describes the **network architecture** of the C2-AUTOMATED project.
 
-It focuses specifically on how the different system components communicate across the network, where network trust boundaries exist, and how the selected transport fits into the broader architecture.
+It focuses on:
+
+- how the C2 and agents communicate across the network;
+- the direction of connection initiation;
+- the relationship between Beacon, Transport and Protocol;
+- network trust boundaries;
+- the selected transport;
+- multi-agent communication;
+- network-related security and testing considerations.
 
 It complements:
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the overall software architecture;
 - [`protocol.md`](protocol.md) for the application-level communication contract;
+- [`state-machines.md`](state-machines.md) for authoritative state definitions and transitions;
+- [`data-model.md`](data-model.md) for the domain entities and their relationships;
 - [`../SECURITY.md`](../SECURITY.md) for security principles;
 - [`threat-model.md`](threat-model.md) for network-related risks;
-- [`countermeasures.md`](countermeasures.md) for the corresponding security controls.
+- [`countermeasures.md`](countermeasures.md) for corresponding security controls.
 
-This document deliberately does **not** redefine the application protocol or task/file-transfer semantics. Those subjects have dedicated documentation.
+This document deliberately does **not** redefine the application protocol, entity model, task lifecycle, or authoritative state machines. Those subjects are defined in their respective documents.
 
 ---
 
-## 2. Network architecture objectives
+# 2. Network Architecture Objectives
 
 The network design has the following objectives:
 
-- provide communication between the C2 server and multiple agents;
+- provide communication between one C2 server and multiple agents;
 - support asynchronous operation;
+- use an agent-initiated connection model;
 - separate logical protocol from network transport;
 - protect communications in transit;
-- maintain clear trust boundaries;
-- allow multiple agents to communicate with a single C2 server;
-- permit transport extensions without redesigning the application core;
+- maintain clear network trust boundaries;
+- allow multiple agents to communicate concurrently;
+- keep transport implementation behind an abstraction;
 - remain simple enough for the MVP and academic laboratory environment.
 
-The current MVP uses:
+The MVP uses:
 
 > **Agent-initiated TCP over TLS**
 
-The asynchronous communication model is based on **agent-initiated communication opportunities**, represented by the Beacon component.
+The asynchronous communication model is based on **agent-initiated communication opportunities**, coordinated by the Beacon component.
 
 Other transport mechanisms may be considered later as extensions.
 
 ---
 
-## 3. Global network topology
+# 3. Global Network Topology
 
 The project follows a centralized C2 model.
 
@@ -64,7 +75,7 @@ The project follows a centralized C2 model.
                          └───────────┬───────────┘
                                      │
                            TCP / TLS │
-                         Agent-initiated
+                      Agent-initiated
                                      │
                   ┌──────────────────┼──────────────────┐
                   │                  │                  │
@@ -84,7 +95,7 @@ The C2 server is the central coordination point.
 
 Agents do not communicate directly with one another through the C2 architecture.
 
-The intended logical relationship is:
+The logical relationship is:
 
 ```text
 Operator
@@ -97,17 +108,17 @@ C2 Server
    └────────► Agent N
 ```
 
-The arrows above represent logical communication relationships. Network connections are initiated by the agents according to their communication cycle.
+The arrows represent logical communication relationships. The network connection itself is initiated by each agent according to its communication cycle.
 
 ---
 
-## 4. Network zones
+# 4. Network Zones
 
 The laboratory deployment can be viewed as three logical zones.
 
-### 4.1 Operator zone
+## 4.1 Operator Zone
 
-This is where the authorized operator interacts with the C2.
+The operator interacts with the C2 through an operator interface.
 
 ```text
 Operator
@@ -116,15 +127,15 @@ Operator
 Operator Interface
 ```
 
-The interface may initially be a CLI, with TUI or Web interfaces considered as future extensions.
+The initial interface is the CLI. TUI and Web interfaces remain possible future extensions.
 
-The operator interface does not directly communicate with agents.
+The operator interface does not communicate directly with agents. It interacts with the C2 application core.
 
 ---
 
-### 4.2 C2 zone
+## 4.2 C2 Zone
 
-This contains the central server and its local resources.
+The C2 zone contains the central server and its local resources.
 
 ```text
 ┌─────────────────────────────────────────┐
@@ -156,11 +167,13 @@ The C2 zone contains:
 - configuration;
 - logging.
 
-The transport listener waits for incoming agent connections. It does not need to establish outbound connections to individual agents for the MVP communication model.
+The transport listener accepts incoming connections initiated by agents.
+
+The MVP does not require the C2 to establish independent outbound connections to agents.
 
 ---
 
-### 4.3 Agent zone
+## 4.3 Agent Zone
 
 Each agent runs in its own endpoint context.
 
@@ -189,17 +202,17 @@ Each agent runs in its own endpoint context.
 └─────────────────────────────────────────┘
 ```
 
-The Beacon determines **when the agent should communicate**.
+The Beacon determines **when the agent should attempt communication**.
 
-The Transport determines **how the communication is established**.
+The Transport determines **how that communication is established and carried**.
 
 ---
 
-# 5. Network trust boundaries
+# 5. Network Trust Boundaries
 
-The network architecture contains several important trust boundaries.
+The architecture contains several important trust boundaries.
 
-## 5.1 Operator ↔ C2 application
+## 5.1 Operator ↔ C2 Application
 
 ```text
 Operator
@@ -212,15 +225,15 @@ Interface
 C2 Core
 ```
 
-The operator is assumed to be authorized, but operator input should still be validated.
+The operator is assumed to be authorized, but operator input must still be validated.
 
-The interface should not bypass the C2 core to directly manipulate transport or storage.
+The interface should not bypass the C2 core to directly manipulate transport or persistent storage.
 
 ---
 
-## 5.2 C2 ↔ network
+## 5.2 C2 ↔ Network
 
-The C2 transport boundary separates trusted server-side application components from network-provided data.
+The transport boundary separates trusted server-side application components from network-provided data.
 
 ```text
 C2 Core
@@ -237,15 +250,15 @@ Transport
 Agent
 ```
 
-Data received from the network must not be considered trusted solely because it arrived through TLS.
+Network input must not be considered trusted solely because it arrived through TLS.
+
+It must pass through the appropriate protocol validation and application checks before affecting C2 state.
 
 ---
 
-## 5.3 Network ↔ agent
+## 5.3 Network ↔ Agent
 
 The agent receives information from an external communication channel.
-
-The expected boundary is:
 
 ```text
 Network
@@ -260,13 +273,13 @@ Protocol Validation
 Agent Core
 ```
 
-The transport layer should therefore remain separate from command execution.
+The transport layer therefore remains separate from command execution and other local application logic.
 
 ---
 
-## 5.4 Application ↔ persistent storage
+## 5.4 Application ↔ Persistent Storage
 
-The network architecture also includes local trust boundaries around persistence:
+The application accesses persistence through defined storage abstractions.
 
 ```text
 C2 Core
@@ -276,45 +289,41 @@ C2 Core
    └──► File Storage Interface ──► Filesystem
 ```
 
-The application should access storage through the defined interfaces rather than coupling business logic directly to storage mechanisms.
+The network layer does not directly manipulate persistent storage.
 
 ---
 
-# 6. Asynchronous communication model
+# 6. Asynchronous Communication Model
 
-The C2-AUTOMATED MVP uses an **agent-initiated asynchronous communication model**.
+The MVP uses an **agent-initiated asynchronous communication model**.
 
-The important concept is that the C2 does not continuously push work to agents through independently initiated network connections.
+The important distinction is between:
 
-Instead:
+1. **who initiates a network connection**; and
+2. **what information is exchanged once the connection exists**.
+
+The agent initiates the communication opportunity:
 
 ```text
 Agent
    │
    │ Beacon / communication opportunity
    ▼
-Establish TCP/TLS session
+Establish TCP/TLS connection
    │
    ▼
-Exchange pending messages
+Exchange pending information
    │
    ▼
-Process / acknowledge information
+Session ends or remains available
    │
    ▼
-Session ends or remains available according to the implementation
-   │
-   ▼
-Next beacon
+Next communication opportunity
 ```
 
-The Beacon therefore determines **when the agent attempts communication**, while the C2 determines **what information is available for that agent when the communication occurs**.
+The C2 does not need to initiate a new network connection whenever it has a task for an agent.
 
----
-
-## 6.1 C2-side model
-
-The C2 maintains logical state independently of an individual network connection.
+Instead, the C2 maintains logical state independently of the current network connectivity of that agent.
 
 For example:
 
@@ -330,152 +339,15 @@ Agent B
  └── Pending Task 3
 ```
 
-The C2 does not need a permanent TCP connection to represent a pending task.
+A task can therefore remain pending while its agent is temporarily disconnected.
 
-Tasks can therefore remain queued while an agent is temporarily disconnected.
-
----
-
-## 6.2 Agent-side model
-
-The agent contains a Beacon component responsible for communication opportunities.
-
-Conceptually:
-
-```text
-Agent
-  │
-  ▼
-Beacon
-  │
-  │ "Time to communicate"
-  ▼
-Transport
-  │
-  ▼
-C2
-```
-
-During a communication opportunity, the agent may:
-
-- identify itself;
-- report its state;
-- send pending results;
-- initiate or continue file transfers;
-- receive pending tasks or other information.
-
-The exact message ordering is defined in [`protocol.md`](protocol.md).
+When the agent next communicates, the C2 can exchange the information associated with that agent.
 
 ---
 
-## 6.3 Communication is asynchronous at the application level
+# 7. Beacon, Transport and Protocol Responsibilities
 
-“Asynchronous” refers primarily to the fact that the C2 and agents do not need to be executing a single blocking operator-to-agent interaction.
-
-For example:
-
-```text
-Operator
-   │
-   │ creates task
-   ▼
-C2 Task Queue
-   │
-   │ task remains pending
-   │
-   │          Agent is temporarily offline
-   │
-   │
-   ▼
-Agent next beacon
-   │
-   ▼
-Task delivered
-```
-
-This allows the operator to create tasks without requiring the agent to be continuously connected at that exact moment.
-
----
-
-## 6.4 Connection lifecycle
-
-The logical connection lifecycle is:
-
-```text
-Agent
-  │
-  │ Wait for beacon opportunity
-  ▼
-Beacon triggered
-  │
-  ▼
-TCP/TLS connection
-  │
-  ▼
-Session established
-  │
-  ▼
-Registration / beacon / pending exchange
-  │
-  ├──► Tasks
-  ├──► Results
-  ├──► File-transfer messages
-  └──► Control information
-  │
-  ▼
-Session termination or continued communication
-  │
-  ▼
-Wait for next beacon
-```
-
-The exact point at which a session is terminated is an implementation detail and remains separate from the logical agent identity.
-
----
-
-## 6.5 Agent identity versus session
-
-A persistent **agent identity** and a temporary **network session** are different concepts.
-
-```text
-Agent Identity
-      │
-      ├── Session 1
-      │
-      ├── Session 2
-      │
-      └── Session N
-```
-
-For example, if the agent loses connectivity:
-
-```text
-Session 1
-    ↓
-Disconnected
-    ↓
-Agent remains known
-    ↓
-Next beacon
-    ↓
-Session 2
-```
-
-The C2 should therefore not treat every new network connection as the creation of a completely new agent.
-
-This distinction is important for:
-
-- task queues;
-- result correlation;
-- last-seen information;
-- reconnection;
-- session management.
-
----
-
-# 7. Beacon, transport and protocol responsibilities
-
-These three concepts must remain distinct.
+These three concepts answer different questions:
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -497,7 +369,7 @@ These three concepts must remain distinct.
 └─────────────────────────────────────────────┘
 ```
 
-This separation allows the communication timing, network mechanism, and application message structure to evolve independently.
+Keeping these responsibilities separate allows communication timing, network transport, and application messages to evolve independently.
 
 ---
 
@@ -507,10 +379,10 @@ The Beacon is responsible for:
 
 - determining communication opportunities;
 - triggering communication attempts;
-- interacting with retry/timeout policy;
-- coordinating the agent's communication cycle.
+- coordinating retry and communication timing policies;
+- initiating the agent's communication cycle.
 
-The Beacon does **not** define the contents of the exchanged messages.
+The Beacon does not define the structure or semantics of application messages.
 
 ---
 
@@ -519,12 +391,12 @@ The Beacon does **not** define the contents of the exchanged messages.
 The Transport is responsible for:
 
 - establishing the network connection;
-- protecting communication using TLS;
+- protecting the communication channel using TLS;
 - sending and receiving bytes;
 - handling network-level connection errors;
-- closing or maintaining the network connection according to the implementation.
+- closing or maintaining the connection according to the implementation.
 
-The Transport does **not** decide which task should be executed.
+The Transport does not decide which task should be executed.
 
 ---
 
@@ -536,13 +408,15 @@ The Protocol is responsible for:
 - serializing and deserializing messages;
 - validating message structures;
 - interpreting message types;
-- correlating messages with agents, tasks, sessions, or transfers.
+- correlating messages with agents, sessions, tasks, results, or transfers.
 
-The Protocol does not determine when the next beacon occurs.
+The Protocol does not determine when the next Beacon communication opportunity occurs.
+
+Detailed message semantics belong to [`protocol.md`](protocol.md).
 
 ---
 
-# 8. Transport architecture
+# 8. Transport Architecture
 
 The MVP transport is:
 
@@ -569,9 +443,9 @@ transport/
 └── tcp_tls.py
 ```
 
-The same separation exists conceptually on the agent.
+The agent follows the same conceptual separation.
 
-The objective is to ensure that the rest of the application depends on a transport interface rather than directly on TCP/TLS implementation details.
+The objective is that higher-level components depend on a transport interface rather than directly on TCP/TLS implementation details.
 
 ---
 
@@ -579,35 +453,45 @@ The objective is to ensure that the rest of the application depends on a transpo
 
 TCP provides the underlying reliable byte-stream transport.
 
-The application protocol operates above this transport.
+The application protocol operates above this byte stream.
 
 TCP is therefore not responsible for:
 
-- identifying protocol messages;
+- identifying application protocol messages;
 - validating message fields;
 - managing tasks;
+- managing results;
 - managing file transfers;
 - interpreting command types.
 
-Those responsibilities remain within higher layers.
+Those responsibilities belong to higher layers.
 
 ---
 
 ## 8.2 TLS
 
-TLS provides protection for the communication channel.
+TLS protects the communication channel.
 
-It is intended to provide:
+Depending on the selected configuration, it is intended to provide:
 
 - confidentiality in transit;
 - integrity in transit;
-- peer authentication according to the selected authentication configuration.
+- peer authentication.
 
-TLS therefore protects the communication channel but does not replace application-level protocol validation or authorization.
+TLS protects the transport channel but does not replace:
+
+- application-level validation;
+- identity handling;
+- task authorization;
+- protocol state validation;
+- endpoint security;
+- protection of locally stored data.
+
+The exact authentication configuration remains an implementation/security decision.
 
 ---
 
-# 9. Connection initiation and direction
+# 9. Connection Initiation and Direction
 
 The MVP uses an **agent-initiated connection model**.
 
@@ -615,8 +499,7 @@ The MVP uses an **agent-initiated connection model**.
                     C2 Server
                         │
                         │
-                  Listening
-                        │
+                  TCP/TLS Listener
                         ▲
                         │
               TCP/TLS connection
@@ -630,97 +513,212 @@ The C2 waits for incoming agent connections.
 
 The agent decides when to initiate communication according to its Beacon mechanism.
 
-The C2 therefore does not need an outbound connection mechanism for each agent.
+The C2 therefore does not require a separate outbound connection mechanism for each agent.
 
-This model simplifies:
+This simplifies:
 
-- the network architecture;
+- network deployment;
 - session handling;
-- laboratory deployment;
 - asynchronous task queuing;
-- reconnection handling.
-
-It also makes the distinction between **logical task availability** and **current network connectivity** explicit.
+- reconnection handling;
+- laboratory testing.
 
 ---
 
-# 10. Main network flows
+# 10. Connection and Session Model
 
-## 10.1 Agent registration
+The network connection and logical Agent identity are distinct.
 
-Conceptually:
+A new communication connection results in a **new Session** associated with an existing or newly recognized Agent.
+
+The network-level sequence is:
 
 ```text
 Agent
-   │
-   │ Beacon / registration opportunity
-   ▼
-Beacon
-   │
-   ▼
-Transport
-   │
-   │ TCP/TLS connection
-   ▼
-C2 Transport
-   │
-   ▼
-Protocol Validation
-   │
-   ▼
-Agent / Session Management
-   │
-   ▼
-Persistent State
+  │
+  │ Beacon / communication opportunity
+  ▼
+New TCP/TLS connection
+  │
+  ▼
+Session created
+  │
+  ▼
+Transport established
+  │
+  ▼
+Session = CONNECTED
+  │
+  ▼
+REGISTER
+  │
+  ▼
+Agent communication = SYNCHRONIZING
+  │
+  ▼
+State reconciliation
+  │
+  ▼
+SYNC_COMPLETE
+  │
+  ▼
+Agent communication = CONNECTED
 ```
 
-The purpose is to associate an incoming participant with an agent identity and communication session.
+The important distinction is:
 
-The exact registration message and authentication mechanism remain defined by the protocol and decision records.
+> **Transport establishment makes the Session connected. Registration does not.**
+
+`REGISTER` identifies the Agent and provides the information required for C2-side registration over an already established transport.
+
+`REGISTER_ACK` confirms registration and communicates the new `session_id`. It does not perform the Session `CONNECTING → CONNECTED` transition.
+
+The authoritative Session and communication state machines are defined in [`state-machines.md`](state-machines.md).
 
 ---
 
-## 10.2 Beacon communication
+## 10.1 Reconnection
 
-A typical beacon cycle is conceptually:
+A reconnecting Agent does not reopen its previous Session.
+
+For example:
+
+```text
+Agent A001
+ ├── S041
+ ├── S042 = DISCONNECTED
+ └── S043 = CONNECTED
+```
+
+The conceptual sequence is:
+
+```text
+S042
+  │
+  ▼
+Disconnected
+  │
+  │ new communication opportunity
+  ▼
+New TCP/TLS connection
+  │
+  ▼
+S043
+```
+
+The previous Session remains historical.
+
+The Agent identity remains the same.
+
+This distinction supports:
+
+- historical session tracking;
+- task correlation;
+- result correlation;
+- last-seen information;
+- synchronization after reconnection.
+
+Detailed Session semantics belong to [`data-model.md`](data-model.md) and [`state-machines.md`](state-machines.md).
+
+---
+
+# 11. Registration and Synchronization Network Flow
+
+Registration occurs over an already established transport connection.
+
+The conceptual flow is:
 
 ```text
 Agent
    │
-   │ 1. Beacon opportunity
+   │ 1. Beacon / communication opportunity
    ▼
 Establish TCP/TLS
    │
    ▼
-Send beacon / state
+Session CONNECTED
    │
    ▼
-C2 identifies session
+REGISTER
    │
-   ├── Pending task(s)
-   ├── Pending transfer(s)
-   └── Other pending information
-          │
-          ▼
-       Exchange
-          │
-          ▼
-    Process local work
-          │
-          ▼
-Session ends or remains available
-          │
-          ▼
-Wait for next beacon
+   ▼
+C2 identifies Agent
+   │
+   ▼
+REGISTER_ACK(session_id)
+   │
+   ▼
+Agent communication SYNCHRONIZING
+   │
+   ▼
+SYNC_STATE
+   │
+   ▼
+C2 reconciliation
+   │
+   ▼
+SYNC_STATE_RESPONSE
+   │
+   ▼
+SYNC_COMPLETE
+   │
+   ▼
+Normal communication
 ```
 
-The exact message sequence is defined by [`protocol.md`](protocol.md).
+This sequence deliberately separates:
+
+- network connection establishment;
+- Session creation;
+- Agent registration;
+- synchronization;
+- normal application communication.
+
+The exact messages and reconciliation rules are defined by [`protocol.md`](protocol.md) and [`reconnection-and-synchronization.md`](reconnection-and-synchronization.md).
 
 ---
 
-## 10.3 Task flow
+# 12. Main Network Flows
 
-The network perspective of task execution is:
+## 12.1 Beacon Communication
+
+A typical communication opportunity is:
+
+```text
+Agent
+   │
+   │ Beacon opportunity
+   ▼
+Establish TCP/TLS
+   │
+   ▼
+Register / identify session
+   │
+   ▼
+Synchronize if required
+   │
+   ▼
+Exchange pending information
+   │
+   ├── Tasks
+   ├── Results
+   ├── File-transfer messages
+   └── Control information
+   │
+   ▼
+Session ends or remains available
+   │
+   ▼
+Next communication opportunity
+```
+
+The exact message ordering is defined in [`protocol.md`](protocol.md).
+
+---
+
+## 12.2 Task Flow
+
+From the network perspective:
 
 ```text
 Operator
@@ -734,39 +732,38 @@ C2 Core
    ▼
 Task Manager
    │
-   │ task queued for Agent A
+   │ task associated with Agent A
    ▼
-Pending Task Store / Queue
+Pending Task
    │
-   │
-   │ Agent A next beacon
+   │ Agent A communicates
    ▼
-Agent Transport
-   │
-   ▼
-Agent Protocol
+Protocol / Transport
    │
    ▼
-Agent Executor
+Agent
+   │
+   ▼
+Task processing
 ```
 
-The key point is that the task does **not** require the agent to be currently connected at the moment the operator creates it.
+The task does not require the Agent to be connected when the Operator creates it.
 
-The task can remain pending until a suitable communication opportunity occurs.
+The C2 can retain the Task while the Agent is offline and exchange it during a later communication opportunity.
 
-The execution details are documented in [`task-lifecycle.md`](task-lifecycle.md).
+The authoritative Task lifecycle is defined in [`task-lifecycle.md`](task-lifecycle.md).
 
 ---
 
-## 10.4 Result flow
+## 12.3 Result Flow
 
-Results conceptually travel through the next available communication opportunity:
+A Result travels through the same transport path:
 
 ```text
 Agent
    │
    ▼
-Executor
+Agent Executor
    │
    ▼
 Agent Protocol
@@ -791,20 +788,15 @@ Persistent State
 Operator Interface
 ```
 
-Depending on the implementation, the result may be transmitted:
+Depending on the implementation and communication state, a Result may be transmitted during the same communication episode or during a later communication opportunity.
 
-- during the communication session associated with the task; or
-- during a later beacon cycle.
-
-The exact protocol behavior is defined in [`protocol.md`](protocol.md) and [`task-lifecycle.md`](task-lifecycle.md).
+The Result belongs to its Task; communication timing does not change that relationship.
 
 ---
 
-## 10.5 File-transfer flow
+## 12.4 File Transfer Flow
 
-A file transfer uses the same network path but has its own application-level lifecycle.
-
-Conceptually:
+File transfer uses the same network path while maintaining its own application-level lifecycle.
 
 ```text
 File Manager
@@ -829,17 +821,15 @@ Remote File Handling
 Remote File Storage
 ```
 
-A large transfer may therefore span multiple communication exchanges depending on the final protocol and session design.
+The transfer may involve multiple messages and, depending on the final implementation, may span communication episodes.
 
-The detailed transfer lifecycle is defined in [`file-transfer.md`](file-transfer.md).
+Detailed transfer semantics belong to [`file-transfer.md`](file-transfer.md).
 
 ---
 
-# 11. Multi-agent communication
+# 13. Multi-Agent Communication
 
 The C2 is designed to support multiple agents concurrently.
-
-The intended model is:
 
 ```text
                     C2
@@ -853,22 +843,23 @@ The intended model is:
     Session A     Session B     Session C
 ```
 
-The arrows point toward the C2 because the agents initiate the network connections.
+The arrows point toward the C2 because the agents initiate network connections.
 
-The C2 therefore needs to maintain a distinction between:
+The C2 must maintain the appropriate associations between:
 
-- the logical agent;
-- the current session;
-- tasks assigned to the agent;
-- results returned by the agent.
+- Agent identity;
+- Session;
+- Tasks;
+- Results;
+- File transfers.
 
-This distinction is documented in `ARCHITECTURE.md` and `data-model.md`.
+These domain relationships are defined in [`data-model.md`](data-model.md).
 
 ---
 
-## 11.1 Session isolation
+## 13.1 Session Isolation
 
-Messages received through one session must not accidentally affect another agent's state.
+Messages received through one Session must not accidentally affect another Agent's state.
 
 Conceptually:
 
@@ -886,15 +877,17 @@ Session B
    └── Results B
 ```
 
-The protocol must provide sufficient identifiers and validation to preserve these associations.
+Protocol identifiers and validation rules must preserve these associations.
+
+A network message must therefore be resolved against the appropriate Session and Agent context before it is allowed to affect application state.
 
 ---
 
-# 12. Network addressing
+# 14. Network Addressing
 
-The concrete deployment environment determines the actual addresses used by the C2 and agents.
+The concrete deployment environment determines the actual addresses used by the C2 and Agents.
 
-For the architecture, the following logical information matters:
+At the architectural level, the relevant information is:
 
 ```text
 C2
@@ -910,22 +903,20 @@ Agent
 
 The architecture intentionally does not hard-code a particular IP addressing scheme.
 
-The laboratory deployment may therefore use:
+The laboratory deployment may use:
 
 - local/private addressing;
 - isolated virtual networks;
 - host-only or equivalent laboratory networking;
 - other explicitly authorized test environments.
 
-The exact deployment topology should be recorded separately when the laboratory environment is selected.
+The exact deployment topology should be documented separately once the laboratory environment is selected.
 
 ---
 
-# 13. Ports and endpoints
+# 15. Ports and Endpoints
 
 The C2 requires a network endpoint for the selected transport.
-
-At the architectural level:
 
 ```text
 C2 Server
@@ -935,21 +926,20 @@ C2 Server
            │
      ┌─────┼─────┐
      │     │     │
-     │     │     │
   Agent 1 Agent 2 Agent N
 ```
 
-The agents initiate connections toward this listener according to their beacon cycle.
+Agents initiate connections toward this listener according to their communication cycle.
 
 The exact port number is a deployment/configuration parameter rather than a fixed architectural requirement.
 
-It should therefore be defined through configuration rather than hard-coded throughout the application.
+It should therefore be configured rather than hard-coded throughout the application.
 
 ---
 
-# 14. TLS boundary
+# 16. TLS Boundary
 
-TLS establishes a protected communication channel between the communicating endpoints.
+TLS establishes a protected communication channel between the endpoints.
 
 ```text
                  TLS Protected Channel
@@ -961,7 +951,7 @@ Agent ──╫═════════════════════�
         Agent initiates the connection
 ```
 
-The protected channel is responsible for securing data **in transit**.
+The protected channel secures data **in transit**.
 
 It does not provide:
 
@@ -972,50 +962,31 @@ It does not provide:
 - protection of locally stored files;
 - protection of compromised endpoints.
 
-These responsibilities remain with the appropriate application and security layers.
+Those responsibilities belong to the corresponding application and security layers.
 
 ---
 
-# 15. Network security boundaries
-
-The network architecture should be understood together with the threat model.
-
-The main network-related risks include:
-
-| Risk ID | Risk | Network relevance |
-|---|---|---|
-| TM-001 | Unauthorized C2 connection | Incoming agent connection |
-| TM-002 | Agent impersonation | Identity associated with network participant |
-| TM-003 | Message tampering | Data crossing the network |
-| TM-004 | Message replay | Repeated network messages |
-| TM-005 | Malformed protocol message | Untrusted network input |
-| TM-020 | Denial of service | Network and connection resource consumption |
-| TM-021 | Session confusion | Association between network session and agent |
-| TM-022 | Beacon / communication-state abuse | Agent communication timing/state |
-
-The complete risk register is maintained in [`threat-model.md`](threat-model.md).
-
----
-
-# 16. Network-level security principles
+# 17. Network Security Principles
 
 The network architecture follows these principles.
 
-### 16.1 The network is not trusted
+## 17.1 The Network Is Not Trusted
 
-The architecture must remain secure even when the network itself is considered hostile.
+Network-provided data must be treated as untrusted input.
 
----
-
-### 16.2 TLS does not replace validation
-
-A valid TLS connection does not imply that application data is valid.
-
-Received messages must still be validated by the protocol layer.
+TLS protects the communication channel but does not make application data inherently trustworthy.
 
 ---
 
-### 16.3 Transport is independent from protocol
+## 17.2 TLS Does Not Replace Validation
+
+A valid TLS connection does not imply that an application message is valid.
+
+Received messages must still pass protocol validation and appropriate application checks.
+
+---
+
+## 17.3 Transport Is Independent from Protocol
 
 The protocol defines the information exchanged.
 
@@ -1031,21 +1002,21 @@ Transport Interface
 TCP/TLS
 ```
 
-This separation allows future transport extensions without rewriting the core application logic.
+This separation allows transport implementations to evolve without rewriting the core application logic.
 
 ---
 
-### 16.4 Session identity is distinct from agent identity
+## 17.4 Session Identity Is Distinct from Agent Identity
 
-A network connection represents a communication session.
+A network connection corresponds to a communication Session.
 
-It does not necessarily represent the permanent identity of the agent.
+It does not represent the permanent identity of the Agent.
 
-This distinction supports reconnection and asynchronous task queuing.
+This distinction is required for reconnection and historical session tracking.
 
 ---
 
-### 16.5 Network-facing components must be resource-aware
+## 17.5 Network-Facing Components Must Be Resource-Aware
 
 Network input can consume:
 
@@ -1055,7 +1026,7 @@ Network input can consume:
 - queues;
 - storage.
 
-The design should therefore include appropriate:
+The implementation should therefore include appropriate:
 
 - limits;
 - timeouts;
@@ -1064,7 +1035,7 @@ The design should therefore include appropriate:
 
 ---
 
-# 17. Network architecture and storage
+# 18. Network Architecture and Storage
 
 The network layer does not directly manage persistent storage.
 
@@ -1087,7 +1058,7 @@ Core / Manager
    └──► File Storage
 ```
 
-For example, when a result is received:
+For example, when a Result is received:
 
 ```text
 Network
@@ -1115,21 +1086,22 @@ File Manager
 File Storage
 ```
 
-This prevents the transport layer from becoming coupled to persistence.
+This prevents the transport layer from becoming coupled to persistence mechanisms.
 
 ---
 
-# 18. Network architecture and logging
+# 19. Network Architecture and Logging
 
 Network-relevant events should be observable through centralized logging.
 
-Potential events include:
+Examples include:
 
 - connection established;
 - connection closed;
-- registration accepted/rejected;
+- registration accepted or rejected;
 - protocol validation failure;
-- session state change;
+- Session state change;
+- synchronization event;
 - transfer failure;
 - communication timeout;
 - unexpected disconnect;
@@ -1137,11 +1109,11 @@ Potential events include:
 
 Logs should contain sufficient identifiers to support correlation without unnecessarily storing secrets or sensitive content.
 
-Relevant logging responsibilities are described in `SECURITY.md`.
+Detailed logging responsibilities are described in [`../SECURITY.md`](../SECURITY.md).
 
 ---
 
-# 19. Laboratory deployment model
+# 20. Laboratory Deployment Model
 
 The project is intended for an **authorized laboratory environment**.
 
@@ -1164,34 +1136,31 @@ A representative topology is:
 │          │ agent-initiated            │              │
 │     ┌────┴───────────────┐            │              │
 │     │                    │            │              │
-│     │                    │            │              │
 │     ▼                    ▼            │              │
 │  Agent VM 1           Agent VM 2 ─────┘              │
 │                                                      │
 └──────────────────────────────────────────────────────┘
 ```
 
-The specific virtualization, addressing, or network isolation mechanism is a deployment decision rather than a requirement of the software architecture.
+The specific virtualization, addressing, or network isolation mechanism is a deployment decision rather than a software architecture requirement.
 
 Testing must remain limited to systems and networks for which explicit authorization exists.
 
 ---
 
-# 20. External exposure
+# 21. External Exposure
 
 The architecture does not require the C2 to be publicly exposed to the Internet.
 
 The preferred development and demonstration model is an isolated or controlled laboratory environment.
 
-Any change that exposes the C2 beyond the intended laboratory environment should trigger a security review, because it changes the threat model and attack surface.
+Any change that exposes the C2 beyond the intended laboratory environment should trigger a security review because it changes the threat model and attack surface.
 
 ---
 
-# 21. Future transport extensions
+# 22. Future Transport Extensions
 
-The architecture deliberately keeps transport behind an interface.
-
-Potential future transport implementations may include alternative mechanisms, depending on project scope and requirements.
+The architecture keeps transport behind an interface.
 
 Conceptually:
 
@@ -1218,9 +1187,9 @@ Any new transport would nevertheless require its own security analysis and testi
 
 ---
 
-# 22. Network architecture versus protocol architecture
+# 23. Network Architecture versus Protocol Architecture
 
-These two documents intentionally answer different questions.
+The two documents intentionally answer different questions.
 
 | Topic | Network Architecture | Protocol |
 |---|---|---|
@@ -1233,18 +1202,18 @@ These two documents intentionally answer different questions.
 | Message structure | No | Yes |
 | Message types | No | Yes |
 | Serialization | No | Yes |
-| Message validation | Security boundary only | Detailed |
+| Message validation | Security boundary | Detailed |
 | Task message semantics | No | Yes |
 | File-transfer message semantics | No | Yes |
 | Beacon semantics | Conceptual | Detailed |
 
-This separation avoids duplicating the same technical specification in multiple documents.
+This separation prevents the same technical specification from being duplicated across documents.
 
 ---
 
-# 23. Relationship with other documentation
+# 24. Relationship with Other Documentation
 
-The network architecture is connected to several other project documents.
+The network architecture is connected to several project documents.
 
 ```text
 ARCHITECTURE.md
@@ -1253,85 +1222,106 @@ ARCHITECTURE.md
 Network Architecture
       │
       ├────► Protocol
-      │
+      ├────► State Machines
+      ├────► Data Model
       ├────► Threat Model
-      │
-      ├────► Security
-      │
+      ├────► Security / Countermeasures
       ├────► File Transfer
-      │
       └────► Testing Strategy
 ```
 
 More specifically:
 
 - `ARCHITECTURE.md` defines the global component structure.
-- `network-architecture.md` defines the network topology and communication paths.
+- `network-architecture.md` defines network topology and communication paths.
 - `protocol.md` defines the application-level communication contract.
-- `threat-model.md` defines the relevant risks.
-- `countermeasures.md` defines how those risks are mitigated.
-- `testing-strategy.md` defines how the network behavior and controls are validated.
+- `state-machines.md` defines authoritative logical states and transitions.
+- `data-model.md` defines persistent domain entities and their relationships.
+- `reconnection-and-synchronization.md` defines synchronization and recovery behavior.
+- `task-lifecycle.md` defines Task lifecycle semantics.
+- `file-transfer.md` defines file-transfer lifecycle and behavior.
+- `threat-model.md` defines relevant risks.
+- `countermeasures.md` defines corresponding controls.
+- `testing-strategy.md` defines how network behavior and controls are validated.
 
 ---
 
-# 24. Open network decisions
+# 25. Open Network Decisions
 
 The following points remain intentionally open:
 
 | Decision | Related area | Status |
 |---|---|---|
 | Exact C2 listening port | Deployment/configuration | Open |
-| Exact session lifetime | Session/transport | Open |
-| Exact registration sequence | Protocol/authentication | Open |
+| Exact Session lifetime | Session/transport | Open |
+| Exact registration message sequence | Protocol/authentication | Open |
 | Exact authentication mechanism | Identity | Open |
-| Exact beacon timing/state machine | Beaconing | Open |
-| Whether sessions remain persistent or close after exchanges | Transport/session | Open |
+| Exact Beacon timing | Beaconing | Open |
+| Beacon retry policy | Availability / beaconing | Open |
+| Whether Sessions remain persistent or close after exchanges | Transport/session | Open |
 | Connection timeout policy | Availability | Open |
-| Retry policy | Availability / beaconing | Open |
 | Resource limits | Availability | Open |
 | Exact laboratory network topology | Deployment | Open |
 | Additional transport implementations | Future extension | Open |
 
-The **agent-initiated communication model itself is established for the MVP**.
+The **agent-initiated communication model is established for the MVP**.
 
-The remaining decision is primarily the precise lifecycle of each TCP/TLS session: whether a session closes after each communication opportunity or remains available for additional exchanges.
+The remaining Session-lifetime decision concerns whether an established TCP/TLS connection remains available for additional exchanges or is closed after a communication episode.
 
-These decisions should be recorded in [`../DECISIONS.md`](../DECISIONS.md) where they constitute significant architectural choices.
+This does not change the distinction between:
+
+- Agent identity;
+- Session;
+- transport connection;
+- Agent communication state.
+
+Significant architectural decisions should be recorded in [`../DECISIONS.md`](../DECISIONS.md).
 
 ---
 
-# 25. Testing implications
+# 26. Testing Implications
 
 The network architecture creates several categories of tests.
 
-### Connectivity
+## Connectivity
 
 Verify that:
 
-- the C2 transport endpoint can accept legitimate agent connections;
-- agents can establish communication;
+- the C2 transport endpoint accepts legitimate Agent connections;
+- Agents can establish communication;
 - invalid connections are rejected appropriately;
 - disconnects are handled cleanly.
 
-### Agent-initiated connection model
+## Agent-Initiated Connection Model
 
 Verify that:
 
-- the agent initiates communication according to its Beacon mechanism;
-- the C2 can accept multiple agent connections;
-- the C2 does not require an outbound connection toward an agent;
-- an offline agent can reconnect later without creating an incorrect identity.
+- the Agent initiates communication according to its Beacon mechanism;
+- the C2 can accept multiple Agent connections;
+- the C2 does not require an outbound connection toward an Agent;
+- an offline Agent can reconnect later without creating an incorrect Agent identity.
 
-### Asynchronous task delivery
+## Registration and Synchronization
 
 Verify that:
 
-- a task can remain pending while an agent is disconnected;
-- the task is delivered when the relevant agent communicates;
-- tasks are not lost between communication sessions;
-- tasks remain associated with the correct agent.
+- a new connection creates a new Session;
+- transport establishment precedes `REGISTER`;
+- `REGISTER` occurs over an already connected Session;
+- `REGISTER_ACK` communicates the new Session identity;
+- synchronization occurs before normal Agent communication when required;
+- reconnection creates a new Session rather than reopening the previous one.
 
-### TLS
+## Asynchronous Task Delivery
+
+Verify that:
+
+- a Task can remain pending while an Agent is disconnected;
+- the Task is delivered when the relevant Agent communicates;
+- Tasks are not lost between communication Sessions;
+- Tasks remain associated with the correct Agent.
+
+## TLS
 
 Verify that:
 
@@ -1339,24 +1329,24 @@ Verify that:
 - invalid or unsuitable connections are rejected according to the selected configuration;
 - communication remains protected in transit.
 
-### Session handling
+## Session Handling
 
 Verify that:
 
-- each session is associated with the correct agent;
-- reconnecting agents do not create incorrect identity associations;
-- disconnected sessions are cleaned up correctly;
-- session lifecycle behavior matches the selected implementation.
+- each Session is associated with the correct Agent;
+- reconnecting Agents do not create incorrect identity associations;
+- disconnected Sessions are handled correctly;
+- Session lifecycle behavior matches the selected implementation.
 
-### Multi-agent operation
+## Multi-Agent Operation
 
 Verify that:
 
-- multiple agents can communicate concurrently;
-- one agent's state does not affect another's;
-- tasks and results remain correctly associated.
+- multiple Agents can communicate concurrently;
+- one Agent's state does not affect another's;
+- Tasks and Results remain correctly associated.
 
-### Protocol boundary
+## Protocol Boundary
 
 Verify that:
 
@@ -1364,7 +1354,7 @@ Verify that:
 - oversized or invalid inputs are handled safely;
 - protocol validation occurs before application processing.
 
-### Resource handling
+## Resource Handling
 
 Verify that:
 
@@ -1377,28 +1367,28 @@ The detailed testing approach belongs in [`testing-strategy.md`](testing-strateg
 
 ---
 
-# 26. Network architecture status
+# 27. Network Architecture Status
 
 The current network architecture establishes the following baseline:
 
-- centralized C2-to-agent topology;
-- multi-agent communication;
-- **agent-initiated asynchronous communication**;
+- centralized C2-to-Agent topology;
+- multi-Agent communication;
+- **Agent-initiated asynchronous communication**;
 - Beacon-driven communication opportunities;
 - TCP/TLS as the MVP transport;
-- separation between protocol and transport;
-- separation between agent identity and communication session;
-- explicit trust boundaries;
+- separation between Beacon, Transport and Protocol responsibilities;
+- separation between Agent identity and Session;
+- explicit network trust boundaries;
 - controlled laboratory deployment;
-- transport abstraction for future extensions.
+- transport abstraction for future extensions;
+- new Session creation on each new communication connection.
 
 The following remain subject to detailed design:
 
 - exact authentication;
-- registration sequence;
-- session state machine;
-- exact session lifetime;
-- beacon timing and retry behavior;
+- registration details;
+- Session lifetime;
+- Beacon timing and retry behavior;
 - resource limits;
 - deployment-specific addressing;
 - exact listening port;
@@ -1410,7 +1400,7 @@ Any implementation change that alters a network boundary, communication path, tr
 
 ---
 
-# 27. Summary
+# 28. Summary
 
 The network architecture can be summarized as:
 
@@ -1442,7 +1432,7 @@ The network architecture can be summarized as:
           Executor        Executor        Executor
 ```
 
-The asynchronous model is:
+The communication sequence is:
 
 ```text
 Agent
@@ -1454,23 +1444,38 @@ Beacon opportunity
 TCP/TLS connection initiated
   │
   ▼
-Session
+New Session
   │
-  ├── Registration / Beacon
+  ▼
+Transport established
+  │
+  ▼
+Session CONNECTED
+  │
+  ▼
+REGISTER
+  │
+  ▼
+Synchronization
+  │
+  ▼
+Normal communication
+  │
   ├── Tasks
   ├── Results
-  └── File-transfer data
+  ├── File transfers
+  └── Control information
   │
   ▼
 Session ends or continues
   │
   ▼
-Wait for next beacon
+Next communication opportunity
 ```
 
 The central design principles are:
 
-> **The agent initiates network communication.**
+> **The Agent initiates the network connection.**
 
 > **The Beacon determines when communication is attempted.**
 
@@ -1478,6 +1483,10 @@ The central design principles are:
 
 > **The Protocol determines what information is exchanged.**
 
-> **The C2 can maintain logical tasks and agent state even when an agent is temporarily disconnected.**
+> **Transport establishment makes a Session connected; registration does not.**
 
-This separation provides a clear foundation for the subsequent **Kill Chain analysis**, **countermeasure analysis**, and **security testing**.
+> **A new connection creates a new Session without creating a new Agent identity.**
+
+> **The C2 can maintain logical Agent and Task state while an Agent is temporarily disconnected.**
+
+This separation provides the network foundation for the subsequent **protocol specification**, **synchronization design**, **threat/kill-chain analysis**, **countermeasure analysis**, and **security testing**.
