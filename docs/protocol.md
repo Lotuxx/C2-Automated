@@ -19,16 +19,20 @@ It is intentionally separated from the transport layer:
 
 The current mandatory transport is TCP/TLS.
 
-The protocol represents communication related to:
+The protocol provides communication mechanisms for:
 
 - agent registration;
-- periodic agent communication;
-- active liveness checks;
+- session establishment;
+- periodic communication and liveness;
 - task dispatch and acknowledgement;
 - task status queries and reports;
 - task results;
+- state synchronization;
 - file transfers;
 - errors.
+
+Detailed state-machine behavior and recovery procedures are defined in the
+corresponding documents rather than duplicated here.
 
 ---
 
@@ -42,7 +46,7 @@ The protocol layer is responsible for:
 - deserializing received messages;
 - validating message structure and fields;
 - carrying correlation identifiers;
-- representing task, result, session, and transfer references.
+- representing references to agents, sessions, tasks, results, and transfers.
 
 The protocol does **not**:
 
@@ -51,9 +55,9 @@ The protocol does **not**:
 - own agent state;
 - execute commands;
 - manage database persistence;
-- implement business-level task transitions.
+- implement domain-level state transitions.
 
-Incoming messages are routed after validation:
+Incoming messages are processed through:
 
 ```text
 Network Input
@@ -69,6 +73,9 @@ Message Router
 Appropriate C2 Component
 ```
 
+The Message Router determines which component handles a valid message, but
+does not own the corresponding domain state.
+
 ---
 
 ## 3. Domain Objects vs Protocol Messages
@@ -78,20 +85,26 @@ The protocol is not the domain model.
 The project distinguishes:
 
 ```text
+Agent
+    = persistent logical identity
+
+Session
+    = one communication episode
+
 Task
     = work requested by the C2
 
 Result
-    = outcome produced by that work
+    = outcome produced by a Task
 
 Message
     = one protocol communication unit
 
 Event
-    = agent/system communication that does not necessarily represent a task
+    = recorded operational occurrence
 ```
 
-For example, one Task can generate several messages:
+One logical Task may therefore generate several protocol messages:
 
 ```text
 Task T001
@@ -101,7 +114,19 @@ Task T001
  └── RESULT
 ```
 
-A `BEACON`, `REGISTER`, or `PONG` does not require a Task to exist.
+Other messages do not require a Task:
+
+```text
+REGISTER
+BEACON
+PING
+PONG
+SYNC_STATE
+ERROR
+```
+
+A protocol Message must therefore not be treated as equivalent to a domain
+object or domain state transition.
 
 ---
 
@@ -120,7 +145,7 @@ Message
 └── payload
 ```
 
-Depending on the message type, the payload or envelope also carries:
+Depending on the message type, the payload or envelope may additionally carry:
 
 ```text
 task_id?
@@ -130,6 +155,27 @@ transfer_id?
 
 The exact wire representation remains to be finalized.
 
+### 4.1 `message_id`
+
+`message_id` uniquely identifies one protocol message.
+
+It is used for:
+
+- communication-level correlation;
+- tracing;
+- duplicate detection;
+- protocol diagnostics.
+
+It does not identify a logical Task, Result, or Session.
+
+### 4.2 `timestamp`
+
+`timestamp` records the message creation time according to the final protocol
+time representation.
+
+Clock synchronization requirements, if any, are implementation concerns and
+remain to be finalized.
+
 ---
 
 ## 5. Identifier Semantics
@@ -138,25 +184,27 @@ The protocol uses distinct identifiers:
 
 ```text
 agent_id
-    → identifies the logical agent
+    → identifies the persistent logical Agent
 
 session_id
-    → identifies a communication session
+    → identifies one communication Session
 
 task_id
-    → identifies one logical task
+    → identifies one logical Task
 
 result_id
-    → identifies one result
+    → identifies one logical Result
 
 transfer_id
-    → identifies one file transfer
+    → identifies one logical File Transfer
 
 message_id
-    → identifies one specific protocol message
+    → identifies one specific protocol Message
 ```
 
-A single logical task may therefore produce several messages:
+These identifiers must not be reused interchangeably.
+
+For example:
 
 ```text
 T001
@@ -166,22 +214,35 @@ T001
  └── M103 RESULT
 ```
 
-`message_id` is used for communication-level tracing and duplicate detection.
-`task_id` is used for logical task correlation.
+`task_id` provides logical Task correlation, while `message_id` identifies each
+individual protocol message.
+
+A Task belongs to an Agent rather than to a Session and may therefore span
+multiple Sessions.
 
 ---
 
 ## 6. Message Catalogue
 
-### C2 → Agent
+### 6.1 C2 → Agent
 
 ```text
+REGISTER_ACK
+BEACON_ACK
 TASK
 TASK_STATUS_QUERY
 PING
+SYNC_STATE_RESPONSE
+SYNC_COMPLETE
 ```
 
-### Agent → C2
+Optional/future:
+
+```text
+TASK_CANCEL
+```
+
+### 6.2 Agent → C2
 
 ```text
 REGISTER
@@ -190,10 +251,11 @@ TASK_ACK
 TASK_STATUS
 RESULT
 PONG
+SYNC_STATE
 ERROR
 ```
 
-### Bidirectional file-transfer messages
+### 6.3 Bidirectional File Transfer
 
 ```text
 FILE_START
@@ -201,23 +263,27 @@ FILE_CHUNK
 FILE_END
 ```
 
-`ERROR` may also be generated by either side when the protocol requires it.
+`ERROR` may be generated by either side when required.
 
 The protocol intentionally remains small. A new message type should only be
-added when a concrete requirement justifies it.
+introduced when a concrete architectural or functional requirement justifies
+it.
 
 ---
 
-## 7. `REGISTER`
+## 7. Registration Messages
 
-`REGISTER` is sent by an agent when establishing or re-establishing its
-identity with the C2.
+### 7.1 `REGISTER`
+
+`REGISTER` is sent by an Agent when establishing communication with the C2.
 
 Conceptually:
 
 ```text
 REGISTER
+├── message_id
 ├── agent_id
+├── previous_session_id?
 ├── hostname
 ├── operating_system
 ├── architecture
@@ -226,27 +292,53 @@ REGISTER
 
 The C2 uses the message to:
 
-- identify the logical Agent;
+- identify the persistent Agent;
 - create or update its Agent record;
-- associate the communication with a Session;
-- initialize or refresh known state.
+- create a **new** Session for the connection;
+- associate the new Session with the Agent;
+- obtain information required for synchronization.
+
+`previous_session_id`, when present, is historical context. It does **not**
+request that a previous Session be reopened.
 
 `REGISTER` is not a Task-related message.
 
+### 7.2 `REGISTER_ACK`
+
+`REGISTER_ACK` confirms that the C2 accepted the registration and provides
+the Session identity assigned to the new communication episode.
+
+Conceptually:
+
+```text
+REGISTER_ACK
+├── message_id
+├── agent_id
+└── session_id
+```
+
+The returned `session_id` identifies the newly created Session.
+
+A previous Session is never revived.
+
 ---
 
-## 8. `BEACON`
+## 8. Periodic Communication and Liveness
 
-`BEACON` is sent periodically by the agent according to its configured
-communication interval and jitter.
+### 8.1 `BEACON`
+
+`BEACON` is sent periodically by the Agent according to its configured
+communication policy.
 
 Its purpose is routine check-in and lightweight state reporting.
 
-Conceptually, it may contain information such as:
+Conceptually:
 
 ```text
 BEACON
+├── message_id
 ├── agent_id
+├── session_id
 ├── current_task_id?
 ├── queued_task_count
 ├── last_result_id?
@@ -255,64 +347,86 @@ BEACON
 
 The exact payload remains to be finalized.
 
-The C2 records activity such as:
+The C2 may use a Beacon to update information such as:
 
 ```text
 last_beacon
 last_seen
 ```
 
-`BEACON` provides passive liveness information and may also provide an
-opportunity for the C2 to dispatch pending work.
+A `BEACON` provides passive liveness information. A missing Beacon does not,
+by itself, establish that an Agent has terminated.
 
-A missing beacon does not by itself prove that an agent has terminated.
+### 8.2 `BEACON_ACK`
+
+`BEACON_ACK` is sent by the C2 in response to a valid `BEACON`.
+
+Conceptually:
+
+```text
+BEACON_ACK
+├── message_id
+├── agent_id
+├── session_id
+└── reference_message_id?
+```
+
+Its primary purpose is to confirm successful receipt of the periodic
+communication.
+
+The exact acknowledgement correlation mechanism remains to be finalized.
 
 ---
 
 ## 9. `PING` / `PONG`
 
-`PING` and `PONG` provide an active, immediate liveness mechanism that is
-complementary to `BEACON`.
+`PING` and `PONG` provide an active connectivity check complementary to
+periodic `BEACON` communication.
 
-### `PING`
+### 9.1 `PING`
 
-Sent by the C2 when it wants to know whether communication with an agent is
+Sent by the C2 when it wants to test whether communication with an Agent is
 currently possible.
 
 ```text
 PING
 ├── message_id
 ├── agent_id
+├── session_id
 └── timestamp
 ```
 
-### `PONG`
+### 9.2 `PONG`
 
-Sent by the agent in direct response to a valid `PING`.
+Sent by the Agent in direct response to a valid `PING`.
 
 ```text
 PONG
 ├── message_id
 ├── agent_id
+├── session_id
+├── reference_message_id?
 └── timestamp
 ```
 
-Their meanings are deliberately different:
+Their meanings are deliberately distinct:
 
 ```text
 BEACON
-→ routine agent-initiated check-in
+→ routine Agent-initiated communication
 
 PING/PONG
 → immediate C2-initiated connectivity check
 ```
 
-A successful `PONG` proves current communication reachability, but does not
-prove anything about the state of a particular Task.
+A successful `PONG` demonstrates current communication reachability. It does
+not establish the state of a particular Task.
 
 ---
 
-## 10. `TASK`
+## 10. Task Messages
+
+### 10.1 `TASK`
 
 `TASK` represents work requested by the C2.
 
@@ -322,23 +436,25 @@ Conceptually:
 TASK
 ├── message_id
 ├── agent_id
+├── session_id
 ├── task_id
 ├── command_type
 └── parameters
 ```
 
-The logical meaning is:
+Its logical meaning is:
 
-> "Please process Task `task_id`."
+> The C2 requests processing of Task `task_id`.
 
-The receiving agent must validate the Task before accepting it and passing it
-to its execution layer.
+The Agent must validate the received Task before accepting it and passing it
+to the execution layer.
 
----
+The protocol message does not itself determine whether the Task is queued or
+started immediately.
 
-## 11. `TASK_ACK`
+### 10.2 `TASK_ACK`
 
-`TASK_ACK` confirms that the agent received and accepted a Task.
+`TASK_ACK` confirms that the Agent received and accepted a Task.
 
 Conceptually:
 
@@ -346,57 +462,40 @@ Conceptually:
 TASK_ACK
 ├── message_id
 ├── agent_id
+├── session_id
 └── task_id
 ```
 
 Its semantic meaning is:
 
-> "The agent received and accepted Task `task_id`."
+> The Agent received and accepted Task `task_id`.
 
-It does not mean that the Task has completed.
+It does **not** mean that the Task has completed.
 
-After receiving `TASK_ACK`, the C2 knows that the Task is known by the agent.
-The Task may then be `QUEUED` or proceed directly to `RUNNING`, depending on
-agent scheduling.
+After acknowledgement, the Task may enter `QUEUED` or proceed to `RUNNING`
+according to the Agent's execution policy.
 
----
+### 10.3 `TASK_STATUS_QUERY`
 
-## 12. `TASK_STATUS_QUERY`
-
-`TASK_STATUS_QUERY` is sent by the C2 when it needs to determine the state of a
-specific Task on the agent.
-
-Conceptually:
+`TASK_STATUS_QUERY` requests the Agent's known state for a specific Task.
 
 ```text
 TASK_STATUS_QUERY
 ├── message_id
 ├── agent_id
+├── session_id
 └── task_id
 ```
 
-The primary use case is recovery from uncertain communication, for example:
+It is primarily used when the C2 needs to recover knowledge about a Task whose
+state is uncertain.
 
-```text
-TASK
-   ↓
-WAITING_ACK
-   ↓
-ACK timeout
-   ↓
-PING/PONG
-   ↓
-TASK_STATUS_QUERY
-```
+The detailed recovery procedure is defined in
+`protocol-state-transition.md` and `task-lifecycle.md`.
 
-The C2 should determine the known Task state before blindly re-dispatching a
-Task that may already have been accepted or executed.
+### 10.4 `TASK_STATUS`
 
----
-
-## 13. `TASK_STATUS`
-
-`TASK_STATUS` reports the agent's current knowledge/state for a Task.
+`TASK_STATUS` reports the Agent's current knowledge of a Task.
 
 Conceptually:
 
@@ -404,6 +503,7 @@ Conceptually:
 TASK_STATUS
 ├── message_id
 ├── agent_id
+├── session_id
 ├── task_id
 ├── status
 └── result_id?
@@ -436,14 +536,14 @@ TASK_STATUS
     result_id = R001
 ```
 
-`UNKNOWN` means that the agent does not have the referenced Task in its
-known task state.
+`UNKNOWN` means that the Agent does not currently have the referenced Task in
+its known task state.
 
 ---
 
-## 14. `RESULT`
+## 11. `RESULT`
 
-`RESULT` represents an execution outcome produced by the agent.
+`RESULT` represents an execution outcome produced by an Agent.
 
 Conceptually:
 
@@ -451,6 +551,7 @@ Conceptually:
 RESULT
 ├── message_id
 ├── agent_id
+├── session_id
 ├── task_id?
 ├── result_id
 ├── status
@@ -459,7 +560,7 @@ RESULT
 └── error?
 ```
 
-A normal task result contains its `task_id`.
+A normal Task Result contains its `task_id`.
 
 For example:
 
@@ -473,52 +574,91 @@ RESULT
 
 The C2 associates the Result with the referenced Task when that Task exists.
 
-If a supplied `task_id` does not correspond to a known Task, the server must
-not silently create a Task. The Result is treated as unmatched/orphaned.
+If a supplied `task_id` does not correspond to a known Task, the C2 must not
+silently create a Task. The Result is instead treated as unmatched/orphaned
+and handled according to the Result-management policy.
+
+`result_id` identifies the logical Result independently from the protocol
+message carrying it.
 
 ---
 
-## 15. Unsolicited Agent Messages
+## 12. State Synchronization Messages
 
-Not every agent message is a Task response.
+State synchronization is performed when a new Session is established and
+requires reconciliation between the Agent's retained state and the C2's
+known state.
 
-Examples:
+### 12.1 `SYNC_STATE`
 
-```text
-REGISTER
-BEACON
-PONG
-ERROR
-```
+`SYNC_STATE` is sent by the Agent after registration to provide the state
+required for reconciliation.
 
-The server therefore does not use a rule such as:
+Conceptually:
 
 ```text
-Every incoming message → Task
+SYNC_STATE
+├── message_id
+├── agent_id
+├── session_id
+├── current_task_id?
+├── current_task_status?
+├── queued_task_ids
+├── pending_result_ids
+├── recent_task_ids
+├── recent_message_ids
+├── last_task_id?
+├── last_result_id?
+└── activity_state
 ```
 
-Instead:
+The exact synchronization payload remains to be finalized.
+
+The Agent's synchronization state is intended to support recovery after
+communication interruption without requiring execution to restart.
+
+### 12.2 `SYNC_STATE_RESPONSE`
+
+`SYNC_STATE_RESPONSE` contains the C2's reconciliation response.
+
+Conceptually:
 
 ```text
-Incoming Message
-       ↓
-Message Router
-       ├── REGISTER        → AgentManager / SessionManager
-       ├── BEACON          → AgentManager / SessionManager
-       ├── PONG            → Session / liveness handling
-       ├── TASK_ACK        → TaskManager
-       ├── TASK_STATUS     → TaskManager
-       ├── RESULT          → ResultManager
-       ├── FILE_*          → FileManager
-       └── ERROR           → appropriate handler
+SYNC_STATE_RESPONSE
+├── message_id
+├── agent_id
+├── session_id
+├── task_updates
+├── tasks_to_send
+├── tasks_to_cancel?
+└── results_needed?
 ```
 
-The Message Router routes messages but does not own the underlying domain
-state.
+The exact conflict-resolution algorithm remains to be finalized.
+
+### 12.3 `SYNC_COMPLETE`
+
+`SYNC_COMPLETE` indicates that the synchronization phase has completed and
+normal protocol operation may resume.
+
+Conceptually:
+
+```text
+SYNC_COMPLETE
+├── message_id
+├── agent_id
+└── session_id
+```
+
+The Agent should not resume normal queued-task processing until the
+synchronization phase has completed.
+
+Detailed synchronization behavior is defined in
+`reconnection-and-synchronization.md`.
 
 ---
 
-## 16. `ERROR`
+## 13. `ERROR`
 
 `ERROR` reports a protocol, processing, communication, or operation error.
 
@@ -528,6 +668,7 @@ Conceptually:
 ERROR
 ├── message_id
 ├── agent_id
+├── session_id?
 ├── task_id?
 ├── transfer_id?
 ├── error_code
@@ -536,12 +677,15 @@ ERROR
 
 The exact error taxonomy remains to be finalized.
 
-Error contents should be sufficient for diagnosis without unnecessarily
-exposing sensitive internal information.
+Error contents should provide sufficient information for diagnosis without
+unnecessarily exposing sensitive internal information.
+
+An error message does not automatically imply a Task `FAILED` state; the
+corresponding domain state must be determined according to the error context.
 
 ---
 
-## 17. File Transfer Messages
+## 14. File Transfer Messages
 
 File transfers use:
 
@@ -553,7 +697,7 @@ FILE_END
 
 Transfers are correlated through `transfer_id`.
 
-For example:
+Conceptually:
 
 ```text
 FILE_START
@@ -561,38 +705,107 @@ FILE_START
     task_id = T002
 ```
 
-followed by multiple `FILE_CHUNK` messages and a final `FILE_END`.
+followed by:
 
-Detailed transfer semantics are defined in [`file-transfer.md`](file-transfer.md).
+```text
+FILE_CHUNK
+    transfer_id = F001
+    chunk = ...
+```
+
+and finally:
+
+```text
+FILE_END
+    transfer_id = F001
+```
+
+Detailed transfer semantics, integrity verification, temporary storage, and
+failure handling are defined in `file-transfer.md`.
 
 ---
 
-## 18. Message Correlation
+## 15. Message Routing
+
+The Message Router routes validated protocol messages to the appropriate
+component.
+
+Conceptually:
+
+```text
+Incoming Message
+       ↓
+Message Router
+       ├── REGISTER
+       │      → AgentManager / SessionManager
+       │
+       ├── REGISTER_ACK
+       │      → Agent communication handling
+       │
+       ├── BEACON / BEACON_ACK
+       │      → AgentManager / SessionManager
+       │
+       ├── PING / PONG
+       │      → Session / liveness handling
+       │
+       ├── TASK
+       │      → TaskManager
+       │
+       ├── TASK_ACK
+       │      → TaskManager
+       │
+       ├── TASK_STATUS_QUERY / TASK_STATUS
+       │      → TaskManager
+       │
+       ├── RESULT
+       │      → ResultManager
+       │
+       ├── SYNC_*
+       │      → SynchronizationManager
+       │
+       ├── FILE_*
+       │      → FileManager
+       │
+       └── ERROR
+              → appropriate handler
+```
+
+The router performs dispatching only. It does not replace the AgentManager,
+TaskManager, ResultManager, FileManager, or SynchronizationManager.
+
+---
+
+## 16. Message Correlation
 
 Current conceptual correlation requirements are:
 
 | Message | `agent_id` | `session_id` | `task_id` | `result_id` | `transfer_id` |
 |---|---|---|---|---|---|
 | `REGISTER` | Required | Optional | No | No | No |
+| `REGISTER_ACK` | Required | Required | No | No | No |
 | `BEACON` | Required | Required | No | No | No |
+| `BEACON_ACK` | Required | Required | No | No | No |
 | `PING` | Required | Required | No | No | No |
 | `PONG` | Required | Required | No | No | No |
-| `TASK` | Required | Contextual | Required | No | Optional |
+| `TASK` | Required | Required | Required | No | Optional |
 | `TASK_ACK` | Required | Required | Required | No | No |
 | `TASK_STATUS_QUERY` | Required | Required | Required | No | No |
 | `TASK_STATUS` | Required | Required | Required | Optional | No |
 | `RESULT` | Required | Required | Optional | Required | No |
+| `SYNC_STATE` | Required | Required | Optional | Optional | No |
+| `SYNC_STATE_RESPONSE` | Required | Required | Optional | Optional | No |
+| `SYNC_COMPLETE` | Required | Required | No | No | No |
 | `FILE_START` | Required | Required | Optional | No | Required |
 | `FILE_CHUNK` | Required | Required | No | No | Required |
 | `FILE_END` | Required | Required | No | No | Required |
 | `ERROR` | Required | Required | Optional | Optional | Optional |
 
-This is the current conceptual contract; exact wire-level requirements remain
-subject to implementation.
+This table defines the current conceptual contract. Exact wire-level
+requirements remain subject to implementation.
 
 ---
 
-## 19. Message Validation
+## 17. Message Validation
 
 Messages received from the network must be treated as untrusted until
 validated.
@@ -621,13 +834,16 @@ Validation should verify, where applicable:
 - payload structure;
 - allowed status values;
 - message-specific constraints;
-- correlation rules.
+- correlation rules;
+- session consistency.
 
 Invalid messages must be rejected in a controlled manner.
 
+Validation must occur before a message is allowed to modify domain state.
+
 ---
 
-## 20. Duplicate Message Handling
+## 18. Duplicate Message Handling
 
 `message_id` provides communication-level duplicate detection.
 
@@ -650,14 +866,24 @@ TASK_STATUS T001
 RESULT T001
 ```
 
-The agent should maintain bounded recent message/task history so that duplicate
+The Agent should maintain bounded recent message/task history so duplicate
 messages can be detected without unbounded runtime state.
+
+Duplicate delivery must not create duplicate logical Tasks or cause an
+already-accepted Task to be executed again solely because its protocol message
+was received more than once.
+
+`result_id` similarly identifies a logical Result independently of the
+individual protocol message carrying it.
 
 ---
 
-## 21. Reliability and Recovery
+## 19. Protocol and Reliability
 
-The protocol distinguishes:
+The protocol carries the information required for reliable recovery, but
+domain-level recovery rules are defined elsewhere.
+
+The central distinction is:
 
 ```text
 communication uncertainty
@@ -665,52 +891,42 @@ communication uncertainty
 task execution failure
 ```
 
-For a missing acknowledgement:
+Relevant protocol mechanisms include:
 
 ```text
-TASK
-  ↓
-WAITING_ACK
-  ↓
-ACK timeout
-  ↓
+TASK_ACK
+TASK_STATUS_QUERY
+TASK_STATUS
 PING
-  ↓
-PONG?
+PONG
+RESULT
+SYNC_STATE
 ```
 
-If `PONG` is received, the agent is reachable at that moment. The C2 should
-then query the specific Task:
+These messages allow the C2 and Agent to recover knowledge about existing
+state rather than assuming that a communication failure necessarily caused
+execution failure.
 
-```text
-TASK_STATUS_QUERY(task_id)
-```
+In particular:
 
-Possible responses include:
+- a missing `TASK_ACK` does not prove that the Task was not accepted;
+- a successful `PONG` proves current communication reachability, not Task
+  completion;
+- a missing `RESULT` does not prove that the Task failed;
+- communication loss does not automatically cancel a running Task;
+- synchronization reconciles retained state rather than reviving an old
+  Session.
 
-```text
-QUEUED
-RUNNING
-COMPLETED
-FAILED
-UNKNOWN
-```
+The detailed transition and recovery rules are defined in:
 
-This allows the C2 to recover its knowledge without blindly re-executing the
-Task.
-
-If `PONG` is not received after the defined health-check policy, the server
-may classify the Agent as unavailable/suspected dead and the current Session
-may become disconnected.
-
-`TIMEOUT` is therefore not synonymous with `FAILED`.
-
-Only when the Task is reported as `UNKNOWN` should re-dispatch become a possible
-next decision, subject to the final retry/idempotency policy.
+- `state-machines.md`;
+- `protocol-state-transition.md`;
+- `reconnection-and-synchronization.md`;
+- `task-lifecycle.md`.
 
 ---
 
-## 22. Versioning
+## 20. Versioning
 
 The protocol contains a version field so protocol evolution can be handled
 explicitly.
@@ -722,9 +938,12 @@ The final policy should define:
 - handling of unsupported versions;
 - version negotiation, if required.
 
+Until that policy is finalized, the current protocol version is an
+implementation-level decision.
+
 ---
 
-## 23. Serialization
+## 21. Serialization
 
 Serialization converts protocol objects into their wire representation.
 Deserialization performs the reverse operation.
@@ -735,14 +954,17 @@ It must preserve, where applicable:
 
 - identifiers;
 - message type;
+- protocol version;
 - timestamp;
 - status;
 - payload structure;
-- file-transfer data.
+- file-transfer information.
+
+Serialization must not alter the logical semantics of a protocol message.
 
 ---
 
-## 24. Transport Independence
+## 22. Transport Independence
 
 The logical protocol remains independent of the transport:
 
@@ -755,28 +977,36 @@ The logical protocol remains independent of the transport:
            (MVP)            transports
 ```
 
-Changing the transport should not require redesigning the logical Task,
-Result, or state model.
+The current MVP uses TCP/TLS.
+
+Changing the transport should not require redesigning the logical Agent,
+Session, Task, Result, or synchronization model.
+
+The transport layer is responsible for delivering serialized protocol
+messages; it does not redefine their semantics.
 
 ---
 
-## 25. Open Questions
+## 23. Open Questions
 
 The following remain to be finalized:
 
 - exact serialization format;
 - exact field types;
 - exact protocol versioning policy;
-- authentication and agent identity mechanism;
+- authentication and Agent identity mechanism;
 - ACK timeout and execution timeout values;
 - PING retry count and timing;
+- synchronization conflict-resolution algorithm;
 - re-dispatch policy after `UNKNOWN`;
 - idempotency/deduplication storage details;
 - exact `BEACON` payload;
+- exact synchronization payload;
 - exact `TASK_STATUS` payload;
 - exact error taxonomy;
-- result recovery after a lost result;
-- exact file-transfer metadata.
+- Result verification semantics;
+- exact file-transfer metadata;
+- transfer resume behavior.
 
-The message vocabulary and recovery principles above should be treated as the
-current protocol baseline before implementation.
+The message vocabulary and message semantics above constitute the current
+protocol baseline before implementation.
