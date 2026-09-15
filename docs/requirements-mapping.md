@@ -3,7 +3,7 @@
 > **Status: Work in Progress**
 >
 > This document maps the project requirements to the current architecture,
-> planned implementation areas, documentation, and validation strategy.
+> implementation areas, documentation, and validation strategy.
 >
 > The mapping is intentionally maintained throughout development. As
 > implementation decisions are finalized, the relevant entries should be
@@ -15,7 +15,7 @@
 
 The purpose of this document is to maintain traceability between:
 
-```text id="2x35yt"
+```text
 Project Requirement
         ↓
 Architecture
@@ -29,10 +29,12 @@ This makes it possible to verify that each requirement has:
 
 - an identified architectural component;
 - an intended implementation location;
+- a corresponding documentation reference;
 - a defined validation approach.
 
-The document also distinguishes mandatory requirements from optional
-extensions.
+The document also distinguishes mandatory requirements from optional extensions and open design decisions.
+
+It is a traceability document rather than a replacement for the detailed architecture, protocol, lifecycle, security, or testing specifications.
 
 ---
 
@@ -49,16 +51,29 @@ The following status categories are used:
 | `Validated` | Implemented and successfully tested |
 | `Bonus` | Optional extension |
 | `Open` | Requirement or implementation detail still requires clarification |
+| `Accepted` | Requirement/risk is intentionally accepted within the project scope |
+| `Out of Scope` | Explicitly not addressed by the project |
+
+A requirement may have both a **project priority** and an **implementation status**.
+
+For example:
+
+```text
+Required / Planned
+Required / In Progress
+Required / Validated
+Bonus / Planned
+```
 
 ---
 
 # 3. Global Project Requirements
 
-The project is based on a C2 server / agent architecture.
+The project is based on an authorized laboratory C2 server / Agent architecture.
 
 The major expected capabilities are:
 
-```text id="n5pmpb"
+```text
 C2 Server
 Agent
 Multi-agent management
@@ -69,23 +84,34 @@ File transfer
 Secure communication
 Linux support
 Operator interface
+Persistence
+Security controls
 Documentation
-Security analysis
+Testing and validation
 ```
 
-The exact mapping below should evolve as the implementation progresses.
+The project also contains optional extensions:
+
+```text
+Windows Agent
+TUI
+Web interface
+Additional transports
+```
+
+Mandatory functionality must be implemented and validated before bonus features are prioritized.
 
 ---
 
-# 4. Core Functional Requirements
+# 4. C2 Server
 
-## 4.1 C2 Server
+**Requirement:** Provide a functional C2 server capable of managing Agents and coordinating supported operations.
 
-**Requirement:** Provide a functional C2 server.
+**Priority:** Required
 
-**Status:** Required / Planned
+**Status:** Planned
 
-### Architecture
+## Architecture
 
 ```text
 C2 Server
@@ -99,10 +125,34 @@ C2 Server
 └── Configuration
 ```
 
-### Implementation
+The C2 is structured as a modular monolith for the MVP.
+
+Primary Core components include:
+
+```text
+AgentManager
+SessionManager
+TaskManager
+ResultManager
+FileManager
+MessageRouter
+SynchronizationManager
+```
+
+## Implementation
 
 ```text
 c2_server/
+├── main.py
+├── interface/
+├── core/
+├── protocol/
+├── transport/
+├── storage/
+├── data/
+├── logging/
+├── config/
+└── tests/
 ```
 
 Main entry point:
@@ -111,20 +161,36 @@ Main entry point:
 c2_server/main.py
 ```
 
-### Validation
+## Documentation
 
-The server must be able to start successfully and provide the functionality
-required by the implemented MVP.
+- `ARCHITECTURE.md`
+- `docs/network-architecture.md`
+- `docs/data-model.md`
+- `DECISIONS.md`
+
+## Validation
+
+The C2 must:
+
+- start successfully;
+- initialize its required components;
+- accept supported Agent connections;
+- manage multiple Agents;
+- create and manage Sessions;
+- manage Tasks and Results;
+- support the implemented MVP operator workflow.
 
 ---
 
-## 4.2 Agent
+# 5. Agent
 
-**Requirement:** Provide a deployable agent.
+**Requirement:** Provide a deployable Agent.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
 
 ```text
 Agent
@@ -135,35 +201,56 @@ Agent
 ├── Executor
 ├── Commands
 ├── Platform
-└── File Storage
+├── Storage
+└── Tests
 ```
 
-### Implementation
+## Implementation
 
 ```text
 agent/
+├── core/
+├── beacon/
+├── protocol/
+├── transport/
+├── executor/
+├── commands/
+├── platform/
+├── storage/
+├── data/
+└── tests/
 ```
 
-### Validation
+## Documentation
 
-The agent must be able to:
+- `ARCHITECTURE.md`
+- `docs/network-architecture.md`
+- `docs/data-model.md`
+
+## Validation
+
+The Agent must be able to:
 
 - start in the supported laboratory environment;
-- establish communication with the C2;
-- receive supported tasks;
+- establish a communication connection with the C2;
+- register itself;
+- synchronize state;
+- receive supported Tasks;
 - execute supported operations;
-- return results.
+- return Results;
+- recover from supported communication interruptions.
 
 ---
 
-# 5. Multi-Agent Management
+# 6. Multi-Agent Management
 
-**Requirement:** The C2 server must support multiple agents
-simultaneously.
+**Requirement:** The C2 server must support multiple Agents simultaneously.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
 
 Primary components:
 
@@ -172,52 +259,64 @@ c2_server/core/agent_manager.py
 c2_server/core/session_manager.py
 ```
 
-The architecture distinguishes agent identity from communication sessions.
+The architecture explicitly distinguishes persistent Agent identity from individual communication Sessions.
 
 Conceptually:
 
-```text id="x8us1n"
+```text
 C2 Server
    │
    ├── Agent A001
-   │      ├── Session S01
-   │      └── Session S02
+   │      ├── Session S041
+   │      ├── Session S042
+   │      └── Session S043
    │
    ├── Agent A002
-   │      └── Session S03
+   │      └── Session S044
    │
    └── Agent A003
-          └── Session S04
+          └── Session S045
 ```
 
-### Implementation
+A single Agent may therefore have multiple historical Sessions.
+
+## Implementation
 
 ```text
 c2_server/core/agent_manager.py
 c2_server/core/session_manager.py
 ```
 
-### Validation
+## Documentation
 
-Test scenarios should verify:
+- `docs/data-model.md`
+- `docs/state-machines.md`
+- `docs/network-architecture.md`
 
-- multiple agents can coexist;
-- agents remain distinguishable;
-- sessions remain associated with the correct agents;
-- tasks are dispatched to the correct agents;
-- one agent does not incorrectly affect another.
+## Validation
+
+Tests must verify:
+
+- multiple Agents can coexist;
+- Agents remain distinguishable;
+- Sessions remain associated with the correct Agent;
+- Tasks remain associated with the correct Agent;
+- one Agent cannot incorrectly modify another Agent's state;
+- simultaneous communication does not mix Agent state.
 
 ---
 
-# 6. Asynchronous Communication
+# 7. Asynchronous Communication
 
-**Requirement:** Support asynchronous communication and multi-agent operation.
+**Requirement:** Support asynchronous communication and independent multi-Agent operation.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
 
-The communication architecture is separated into:
+## Architecture
+
+The communication stack separates:
 
 ```text
 Protocol
@@ -225,64 +324,99 @@ Protocol
 Transport
 ```
 
-while task scheduling remains independent from the transport mechanism.
+while Task management remains independent from the underlying transport.
 
 The conceptual model is:
 
-```text id="ur2asy"
-Agent A001 → independent activity
-Agent A002 → independent activity
-Agent A003 → independent activity
+```text
+Agent A001 → independent communication / Tasks
+Agent A002 → independent communication / Tasks
+Agent A003 → independent communication / Tasks
 ```
 
-### Implementation
+The C2 uses explicit components for message routing and synchronization.
+
+## Implementation
 
 Primary areas:
 
 ```text
 c2_server/core/session_manager.py
 c2_server/core/task_manager.py
+c2_server/core/message_router.py
+c2_server/core/synchronization_manager.py
+
 c2_server/transport/
 agent/beacon/
 agent/transport/
 ```
 
-### Validation
+## Documentation
+
+- `docs/network-architecture.md`
+- `docs/state-machines.md`
+- `docs/reconnection-and-synchronization.md`
+- `docs/task-lifecycle.md`
+
+## Validation
 
 Tests should verify that:
 
-- multiple agents can communicate concurrently;
-- one active task does not block unrelated agent activity;
-- independent task queues remain correctly associated with agents;
-- communication failures affecting one session do not incorrectly terminate
-  unrelated sessions.
+- multiple Agents can communicate concurrently;
+- one active Task does not block unrelated Agent activity;
+- Task queues remain associated with the correct Agents;
+- communication failure affecting one Session does not incorrectly terminate unrelated Sessions;
+- multiple Agents can perform independent synchronization and Task handling.
 
-The exact concurrency model remains an open implementation decision.
+The exact concurrency implementation remains an implementation decision.
 
 ---
 
-# 7. Agent Registration and Beaconing
+# 8. Agent Registration, Session Establishment and Beaconing
 
-**Requirement:** The agent must establish communication with the C2 and
-participate in the periodic communication cycle.
+**Requirement:** The Agent must establish communication with the C2, register its identity, and participate in the periodic communication cycle.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
+
+The connection lifecycle is:
 
 ```text
-Agent
-  ↓
-Beacon
-  ↓
-Protocol
-  ↓
-Transport
-  ↓
-C2
+New connection
+      ↓
+New Session
+      ↓
+Session = CONNECTING
+      ↓
+Transport established
+      ↓
+Session = CONNECTED
+      ↓
+REGISTER
+      ↓
+Agent communication = SYNCHRONIZING
+      ↓
+State reconciliation
+      ↓
+SYNC_COMPLETE
+      ↓
+Agent communication = CONNECTED
 ```
 
-### Implementation
+The important distinction is:
+
+```text
+Session state
+      ≠
+Agent communication state
+```
+
+`REGISTER` does not establish the Session. The Session is already `CONNECTED` when registration occurs.
+
+## Implementation
 
 Primary areas:
 
@@ -290,30 +424,277 @@ Primary areas:
 agent/beacon/
 agent/protocol/
 agent/transport/
+
 c2_server/core/agent_manager.py
 c2_server/core/session_manager.py
+c2_server/core/synchronization_manager.py
 ```
 
-### Validation
+## Documentation
+
+- `docs/state-machines.md`
+- `docs/network-architecture.md`
+- `docs/reconnection-and-synchronization.md`
+- `docs/protocol-state-transition.md`
+
+## Validation
 
 Tests should verify:
 
-- agent registration;
-- correct identity association;
-- beacon communication;
-- session creation;
-- session state updates;
-- reconnection behaviour once defined.
+- connection establishment;
+- Session creation;
+- Session state transitions;
+- Agent registration;
+- `REGISTER_ACK`;
+- assignment of the new `session_id`;
+- synchronization;
+- `SYNC_COMPLETE`;
+- normal Beacon communication;
+- reconnection using a new Session.
 
 ---
 
-# 8. Task Management
+# 9. Beacon and Liveness
 
-**Requirement:** The system must support a task-based execution model.
+**Requirement:** Provide periodic Agent-to-C2 communication and a mechanism for detecting communication degradation.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
+
+Routine communication uses:
+
+```text
+BEACON
+   ↓
+C2
+   ↓
+BEACON_ACK
+```
+
+Immediate connectivity testing uses:
+
+```text
+PING
+   ↓
+PONG
+```
+
+These mechanisms are distinct from Task execution.
+
+The Agent communication state machine is:
+
+```text
+CONNECTING
+CONNECTED
+DEGRADED
+OFFLINE_WAIT
+SYNCHRONIZING
+```
+
+## Implementation
+
+```text
+agent/beacon/
+agent/transport/
+c2_server/transport/
+c2_server/core/session_manager.py
+```
+
+## Documentation
+
+- `docs/state-machines.md`
+- `docs/network-architecture.md`
+- `docs/protocol.md`
+
+## Validation
+
+Tests should verify:
+
+- regular Beacon transmission;
+- valid acknowledgement handling;
+- lost acknowledgement handling;
+- transition toward `DEGRADED`;
+- transition to `OFFLINE_WAIT` according to the recovery policy;
+- recovery after successful communication;
+- reconnection after offline operation.
+
+Communication loss must not automatically be interpreted as Agent termination or Task failure.
+
+---
+
+# 10. State Management
+
+**Requirement:** Maintain explicit and consistent lifecycle states for Agents, Sessions, Tasks, and communication.
+
+**Priority:** Required
+
+**Status:** Planned
+
+## Architecture
+
+The project uses separate state machines for:
+
+```text
+Agent health
+Agent activity
+Agent communication
+Session
+Task
+File Transfer
+```
+
+Examples:
+
+### Session
+
+```text
+CONNECTING
+    ↓
+CONNECTED
+   /   \
+  ↓     ↓
+DISCONNECTED
+CLOSED
+```
+
+### Task
+
+```text
+PENDING
+   ↓
+WAITING_ACK
+   ↓
+QUEUED
+   ↓
+RUNNING
+  /    \
+FAILED COMPLETED
+```
+
+Additional terminal states:
+
+```text
+TIMEOUT
+CANCELLED
+```
+
+## Implementation
+
+State definitions are implemented through the relevant domain components and persisted through the storage layer where required.
+
+## Documentation
+
+- `docs/state-machines.md`
+- `docs/data-model.md`
+- `docs/task-lifecycle.md`
+- `docs/file-transfer.md`
+
+## Validation
+
+Tests must verify:
+
+- valid transitions;
+- invalid transitions;
+- terminal-state behaviour;
+- persistence of relevant states;
+- separation between Session and communication states;
+- correct Task recovery behaviour.
+
+---
+
+# 11. State Synchronization and Reconnection
+
+**Requirement:** The Agent and C2 must be able to recover from temporary communication loss without blindly recreating or duplicating state.
+
+**Priority:** Required
+
+**Status:** Planned
+
+## Architecture
+
+Synchronization uses:
+
+```text
+REGISTER
+REGISTER_ACK
+SYNC_STATE
+SYNC_STATE_RESPONSE
+SYNC_COMPLETE
+```
+
+Canonical flow:
+
+```text
+New connection
+      ↓
+REGISTER
+      ↓
+REGISTER_ACK(session_id)
+      ↓
+SYNCHRONIZING
+      ↓
+SYNC_STATE
+      ↓
+C2 reconciliation
+      ↓
+SYNC_STATE_RESPONSE
+      ↓
+SYNC_COMPLETE
+```
+
+A new connection always creates a new Session.
+
+For example:
+
+```text
+Agent A001
+ ├── S041
+ ├── S042 = DISCONNECTED
+ └── S043 = CONNECTED
+```
+
+## Implementation
+
+```text
+c2_server/core/synchronization_manager.py
+c2_server/core/session_manager.py
+agent/core/
+agent/protocol/
+```
+
+## Documentation
+
+- `docs/reconnection-and-synchronization.md`
+- `docs/state-machines.md`
+- `docs/data-model.md`
+
+## Validation
+
+Tests should verify:
+
+- Agent reconnection;
+- new Session creation;
+- preservation of Agent identity;
+- recovery of pending Tasks;
+- delayed Results;
+- duplicate-message handling;
+- reconciliation of Agent and C2 state;
+- no reopening of historical Sessions.
+
+---
+
+# 12. Task Management
+
+**Requirement:** The system must support an asynchronous task-based execution model.
+
+**Priority:** Required
+
+**Status:** Planned
+
+## Architecture
 
 ```text
 Operator
@@ -329,65 +710,102 @@ Protocol
 Transport
    ↓
 Agent
+   ↓
+Executor
 ```
 
-### Implementation
+The Task Manager manages Task lifecycle state but does not directly implement endpoint command execution.
 
-Primary areas:
+## Authoritative Task States
 
 ```text
-c2_server/core/task_manager.py
-agent/executor/
-agent/commands/
+PENDING
+WAITING_ACK
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+TIMEOUT
+CANCELLED
 ```
 
-### Validation
-
-The task lifecycle must be tested.
-
-Current conceptual states:
+Normal lifecycle:
 
 ```text
 PENDING
    ↓
- SENT
+WAITING_ACK
+   ↓
+QUEUED
    ↓
 RUNNING
-   ├──► FAILED
    ↓
-COMPLETED
+COMPLETED / FAILED
 ```
 
-Detailed lifecycle behaviour is documented in
-[`task-lifecycle.md`](task-lifecycle.md).
+`UNKNOWN` is not a persistent Task state. It is a recovery/reporting condition used when execution state cannot currently be established reliably.
+
+## Implementation
+
+```text
+c2_server/core/task_manager.py
+agent/executor/
+```
+
+## Documentation
+
+- `docs/task-lifecycle.md`
+- `docs/state-machines.md`
+- `docs/data-model.md`
+
+## Validation
+
+Tests should verify:
+
+- Task creation;
+- dispatch;
+- acknowledgement;
+- queuing;
+- execution;
+- completion;
+- failure;
+- timeout handling;
+- cancellation;
+- recovery after communication loss;
+- duplicate Task protection;
+- correct Agent association.
 
 ---
 
-# 9. Command Execution
+# 13. Command Execution
 
-**Requirement:** The agent must execute supported commands.
+**Requirement:** The Agent must execute the supported command categories.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
 
 ```text
 TASK
   ↓
+Task handling
+  ↓
 Executor
   ↓
-Command Handler
+Command implementation
   ↓
-Platform-specific Implementation
+Platform-specific implementation
   ↓
 Execution
   ↓
-Result
+RESULT
 ```
 
-### Current Command Categories
+Current command categories:
 
-```text id="2beva9"
+```text
 SHELL
 SYSINFO
 FILES
@@ -395,7 +813,7 @@ PERSISTENCE
 SELF_DESTRUCT
 ```
 
-### Implementation
+## Implementation
 
 ```text
 agent/executor/
@@ -403,74 +821,107 @@ agent/commands/
 agent/platform/
 ```
 
-### Validation
+## Documentation
+
+- `ARCHITECTURE.md`
+- `docs/task-lifecycle.md`
+- `DECISIONS.md`
+
+## Validation
 
 Tests should verify:
 
-- valid commands are dispatched correctly;
-- invalid commands are rejected;
-- command parameters are validated;
-- execution failures generate controlled results;
+- supported commands are dispatched correctly;
+- unsupported commands are rejected;
+- parameters are validated;
+- malformed Tasks do not reach execution;
+- execution failures produce controlled Results;
 - platform-specific implementations remain isolated.
+
+`PERSISTENCE` and `SELF_DESTRUCT` require additional security definition before their implementation can be considered complete.
 
 ---
 
-# 10. Result Handling
+# 14. Result Handling
 
-**Requirement:** Results from agents must be returned to and managed by the
-C2 server.
+**Requirement:** Results from Agents must be returned to and managed by the C2 server.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
 
 ```text
 Agent
    ↓
-Result
+RESULT
    ↓
 Protocol
    ↓
 Transport
    ↓
-C2 Protocol
+Message Router
    ↓
 Result Manager
    ↓
 Storage / Interface
 ```
 
-### Implementation
+A Result belongs to a Task.
 
-Primary area:
+```text
+Task
+  │
+  └── Result
+```
+
+A Result may be transmitted later than the execution itself, including after reconnection.
+
+## Implementation
 
 ```text
 c2_server/core/result_manager.py
+c2_server/core/message_router.py
+agent/protocol/
 ```
 
-### Validation
+## Documentation
+
+- `docs/data-model.md`
+- `docs/task-lifecycle.md`
+- `docs/protocol.md`
+
+## Validation
 
 Tests should verify:
 
-- correct result reception;
-- correct association with the originating task;
-- correct association with the agent;
-- result persistence;
-- handling of malformed or unexpected results.
+- correct Result reception;
+- correct Task association;
+- correct Agent association;
+- Result persistence;
+- delayed Results;
+- duplicate Results;
+- unexpected/orphan Results;
+- malformed Results.
+
+An unknown Result must not silently create a fabricated Task.
 
 ---
 
-# 11. File Transfer
+# 15. File Transfer
 
-**Requirement:** Support file transfer between the C2 server and agents.
+**Requirement:** Support file transfer between the C2 server and Agents.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
 
-File transfer is treated separately from ordinary task results.
+## Architecture
 
-Current conceptual protocol:
+File transfer is treated as a dedicated subsystem rather than as an ordinary Task Result.
+
+The protocol uses:
 
 ```text
 FILE_START
@@ -482,90 +933,126 @@ FILE_CHUNK
 FILE_END
 ```
 
-### Implementation
+The logical Transfer is distinct from:
 
-Primary areas:
+```text
+Agent
+Session
+Task
+Result
+```
+
+A Transfer may be associated with a Task and may conceptually span Sessions.
+
+## Implementation
+
+C2:
 
 ```text
 c2_server/core/file_manager.py
 c2_server/storage/files/
 c2_server/data/files/
+```
 
-agent/commands/
+Agent:
+
+```text
 agent/storage/files/
 agent/data/files/
 ```
 
-### Validation
+Protocol:
+
+```text
+c2_server/protocol/
+agent/protocol/
+```
+
+## Documentation
+
+- `docs/file-transfer.md`
+- `docs/data-model.md`
+- `ARCHITECTURE.md`
+
+## Validation
 
 Testing should include:
 
 - C2 → Agent transfer;
 - Agent → C2 transfer;
 - multi-chunk files;
-- interrupted transfers;
 - invalid transfer metadata;
+- incomplete transfers;
+- communication interruptions;
 - integrity verification;
 - temporary-file handling;
-- cleanup of failed transfers.
+- cleanup of failed transfers;
+- controlled final-file promotion.
 
-Detailed design is documented in [`file-transfer.md`](file-transfer.md).
+Exact transfer recovery and resumability behaviour remains an implementation detail tracked by the file-transfer specification.
 
 ---
 
-# 12. File Integrity
+# 16. File Integrity
 
-**Requirement / Security Property:** Transferred files should be verifiable
-after reconstruction.
+**Requirement / Security Property:** Transferred files should be verifiable after reconstruction.
+
+**Priority:** Required security property
 
 **Status:** Planned
 
-### Architecture
+## Architecture
 
 ```text
 Original File
      ↓
-Cryptographic Hash
+Integrity Value
      ↓
 Transfer
      ↓
 Reconstructed File
      ↓
-Cryptographic Hash
+Integrity Verification
      ↓
-Comparison
+Valid / Invalid
 ```
 
-### Current Design
+A cryptographic hash such as SHA-256 is intended for file-integrity verification.
 
-A hash such as SHA-256 is currently intended for file-integrity verification.
+## Implementation
 
-### Implementation
+The exact code location will be determined between the File Manager and file-transfer/storage components.
 
-The exact implementation location remains to be finalized between the file
-manager, protocol layer, and storage/transfer components.
+The integrity check belongs to the transfer lifecycle rather than to the general Task Result model.
 
-### Validation
+## Documentation
+
+- `docs/file-transfer.md`
+- `docs/countermeasures.md`
+
+## Validation
 
 Tests should verify:
 
 ```text
-Matching hash
-    → valid transfer
+Matching integrity value
+    → transfer accepted
 
-Mismatching hash
-    → invalid transfer
+Mismatching integrity value
+    → transfer rejected / marked invalid
 ```
 
 ---
 
-# 13. Secure Communication
+# 17. Secure Communication
 
 **Requirement / Security Property:** Protect C2-Agent communication in transit.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
 
 The mandatory MVP transport is:
 
@@ -581,56 +1068,110 @@ C2 Server
   Agent
 ```
 
-### Implementation
+The protocol remains independent from the transport layer.
 
-Primary area:
+## Implementation
 
 ```text
 c2_server/transport/
 agent/transport/
 ```
 
-### Validation
+## Documentation
+
+- `docs/network-architecture.md`
+- `docs/countermeasures.md`
+- `DECISIONS.md`
+
+## Validation
 
 Tests should verify:
 
 - successful TLS communication;
-- intended TLS configuration;
-- certificate verification behaviour once finalized;
-- handling of TLS failures.
+- invalid TLS configuration handling;
+- certificate/configuration behaviour once finalized;
+- failure handling;
+- absence of unintended plaintext downgrade.
 
-Detailed requirements are documented in [`SECURITY.md`](../SECURITY.md).
+The exact Agent authentication mechanism remains an open security decision.
 
 ---
 
-# 14. Protocol
+# 18. Protocol
 
-**Requirement:** Define a structured communication protocol between the C2
-server and agents.
+**Requirement:** Define a structured communication protocol between the C2 server and Agents.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Current Message Types
+**Status:** Planned
+
+## Current Protocol Categories
+
+### Registration and synchronization
 
 ```text
 REGISTER
+REGISTER_ACK
+SYNC_STATE
+SYNC_STATE_RESPONSE
+SYNC_COMPLETE
+```
+
+### Liveness
+
+```text
 BEACON
+BEACON_ACK
+PING
+PONG
+```
+
+### Task and Result
+
+```text
 TASK
+TASK_ACK
+TASK_STATUS
+TASK_STATUS_QUERY
 RESULT
+```
+
+### File Transfer
+
+```text
 FILE_START
 FILE_CHUNK
 FILE_END
+```
+
+### Error handling
+
+```text
 ERROR
 ```
 
-### Implementation
+## Implementation
 
 ```text
 c2_server/protocol/
 agent/protocol/
 ```
 
-### Validation
+Key components include:
+
+```text
+messages.py
+serializer.py
+validator.py
+```
+
+## Documentation
+
+- `docs/protocol.md`
+- `docs/protocol-state-transition.md`
+- `docs/state-machines.md`
+
+## Validation
 
 Tests should verify:
 
@@ -639,49 +1180,108 @@ Tests should verify:
 - serialization/deserialization;
 - required fields;
 - message identifiers;
-- protocol version handling once defined.
-
-Detailed protocol design is documented in [`protocol.md`](protocol.md).
+- protocol version handling;
+- invalid message ordering;
+- correct message/state relationships.
 
 ---
 
-# 15. Linux Support
+# 19. Protocol Routing and Synchronization
 
-**Requirement:** Support Linux agents.
+**Requirement:** Route incoming protocol messages to the appropriate C2 subsystem and handle Agent/C2 reconciliation.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
+
+```text
+Transport
+   ↓
+Protocol validation
+   ↓
+Message Router
+   ├── Agent Manager
+   ├── Session Manager
+   ├── Task Manager
+   ├── Result Manager
+   ├── File Manager
+   └── Synchronization Manager
+```
+
+The `MessageRouter` is responsible for dispatching valid messages to the appropriate subsystem.
+
+The `SynchronizationManager` is responsible for synchronization/reconciliation rather than being embedded inside generic message parsing.
+
+## Implementation
+
+```text
+c2_server/core/message_router.py
+c2_server/core/synchronization_manager.py
+```
+
+## Documentation
+
+- `ARCHITECTURE.md`
+- `docs/protocol.md`
+- `docs/reconnection-and-synchronization.md`
+
+## Validation
+
+Tests should verify:
+
+- valid messages reach the correct subsystem;
+- invalid messages are rejected before routing;
+- unrelated message types are not processed by the wrong component;
+- synchronization messages trigger the expected reconciliation workflow.
+
+---
+
+# 20. Linux Support
+
+**Requirement:** Support Linux Agents.
+
+**Priority:** Required
+
+**Status:** Planned
+
+## Architecture
 
 ```text
 Agent
   ↓
 Platform Abstraction
   ↓
-Linux
+Linux implementation
 ```
 
-### Implementation
+Platform-specific behaviour remains separated from the common Agent architecture.
+
+## Implementation
 
 ```text
 agent/platform/
 agent/commands/
 ```
 
-### Validation
+## Validation
 
-The complete MVP agent must be tested in the intended Linux laboratory
-environment.
+The complete MVP Agent must be tested in the intended Linux laboratory environment.
+
+Tests should cover the supported command categories that are implemented for Linux.
 
 ---
 
-# 16. Windows Support
+# 21. Windows Support
 
-**Requirement:** Windows support.
+**Requirement:** Windows Agent support.
 
-**Status:** Bonus
+**Priority:** Bonus
 
-### Architecture
+**Status:** Bonus / Future
+
+## Architecture
 
 ```text
 Platform Abstraction
@@ -689,25 +1289,32 @@ Platform Abstraction
      └── Windows
 ```
 
-### Implementation
+Windows-specific code should remain isolated from the common Agent components.
 
-Platform-specific code should remain isolated so that Windows support can be
-added without redesigning the common agent architecture.
+## Implementation
 
-### Validation
+```text
+agent/platform/
+agent/commands/
+```
 
-Windows support requires a dedicated test environment before being considered
-validated.
+## Validation
+
+Windows support requires a dedicated authorized test environment.
+
+It should not be considered validated merely because the platform abstraction exists.
 
 ---
 
-# 17. Operator Interface
+# 22. Operator Interface
 
-**Requirement:** Provide an operator interface.
+**Requirement:** Provide an operator interface for managing the C2.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### MVP
+**Status:** Planned
+
+## MVP
 
 The initial interface is:
 
@@ -715,7 +1322,7 @@ The initial interface is:
 CLI
 ```
 
-### Architecture
+Architecture:
 
 ```text
 Operator
@@ -732,56 +1339,48 @@ TUI
 Web
 ```
 
-### Implementation
+These are separate interfaces over the same C2 Core rather than separate implementations of C2 business logic.
+
+## Implementation
 
 ```text
 c2_server/interface/
+├── cli/
+├── tui/
+└── web/
 ```
 
-### Validation
+MVP CLI:
 
-Tests and manual validation should verify that the operator can:
+```text
+c2_server/interface/cli/
+```
 
-- view agents;
-- select an agent;
-- create tasks;
-- inspect task state;
-- inspect returned results;
+## Validation
+
+The MVP interface should allow the operator to:
+
+- view Agents;
+- inspect Sessions;
+- select an Agent;
+- create Tasks;
+- inspect Task state;
+- inspect Results;
 - initiate supported file-transfer operations.
 
 The exact CLI command set remains to be finalized.
 
 ---
 
-# 18. Additional Transport Support
-
-**Requirement:** Additional transports beyond TCP/TLS.
-
-**Status:** Bonus / Future Extension
-
-Current conceptual architecture:
-
-```text
-Transport Interface
-     ├── TCP/TLS
-     ├── HTTP
-     └── DNS
-```
-
-TCP/TLS is the MVP.
-
-HTTP and DNS are not considered implemented or validated unless explicitly
-added later.
-
----
-
-# 19. Persistence
+# 23. Persistence
 
 **Requirement:** Maintain relevant structured application state.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
 
 ```text
 Application
@@ -791,39 +1390,63 @@ Database Interface
 SQLite
 ```
 
-Potential entities include:
+Relevant entities include:
 
 ```text
-agents
-sessions
-tasks
-results
-file transfers
-events
+Agents
+Sessions
+Tasks
+Results
+Transfers
+Events
 ```
 
-### Implementation
+The C2 maintains the persistent historical record.
+
+The Agent maintains only the lightweight state required for recovery and synchronization.
+
+## Implementation
 
 ```text
 c2_server/storage/database/
+├── interface.py
+├── sqlite.py
+└── models.py
 ```
 
-### Validation
+## Documentation
 
-Tests should verify persistence and retrieval of finalized entities and
-state.
+- `docs/data-model.md`
+- `ARCHITECTURE.md`
+- `DECISIONS.md`
 
-The exact schema remains a work in progress.
+## Validation
+
+Tests should verify:
+
+- creation;
+- retrieval;
+- update;
+- persistence across C2 restart;
+- correct relationships;
+- correct handling of finalized and historical Sessions;
+- Task and Result persistence;
+- Transfer metadata persistence;
+- Event persistence where implemented.
+
+The exact database schema remains subject to implementation.
 
 ---
 
-# 20. File Storage
+# 24. File Storage
 
-**Requirement:** Store transferred files separately from structured metadata.
+**Requirement:** Store transferred file contents separately from structured metadata.
 
-**Status:** Required / Planned
+**Priority:** Required
 
-### Architecture
+**Status:** Planned
+
+## Architecture
 
 ```text
 File Manager
@@ -835,7 +1458,9 @@ Filesystem
 data/files/
 ```
 
-### Implementation
+Structured metadata belongs in the database, while file contents belong in the filesystem storage layer.
+
+## Implementation
 
 C2:
 
@@ -851,102 +1476,249 @@ agent/storage/files/
 agent/data/files/
 ```
 
-### Validation
+## Validation
 
 Tests should verify:
 
 - correct storage location;
-- controlled paths;
-- file creation and retrieval;
+- controlled workspace boundaries;
+- file creation;
+- file retrieval;
 - temporary-file handling;
-- cleanup behaviour.
+- cleanup;
+- integrity verification;
+- separation from structured database metadata.
 
 ---
 
-# 21. Security and Countermeasures
+# 25. Logging and Event Traceability
 
-**Requirement:** Identify threats and implement appropriate countermeasures.
+**Requirement / Security Property:** Provide sufficient logging and event traceability for system operation and security analysis.
 
-**Status:** Required / Planned
+**Priority:** Required
+
+**Status:** Planned
+
+## Architecture
+
+The project distinguishes between:
+
+```text
+Message
+    ≠
+Event
+```
+
+Messages represent protocol communication.
+
+Events represent significant state or operational occurrences.
+
+Examples:
+
+```text
+Agent registration
+Session establishment
+Session disconnection
+Task creation
+Task completion
+Result reception
+File-transfer event
+Protocol error
+Transport error
+Synchronization event
+```
+
+## Implementation
+
+```text
+c2_server/logging/
+```
+
+and the Event model defined by the data model.
+
+## Documentation
+
+- `docs/data-model.md`
+- `docs/countermeasures.md`
+- `docs/testing-strategy.md`
+
+## Validation
+
+Tests should verify that relevant security and operational events are recorded without exposing unnecessary sensitive information.
+
+---
+
+# 26. Security and Countermeasures
+
+**Requirement:** Identify project threats and implement appropriate security countermeasures.
+
+**Priority:** Required
+
+**Status:** Planned
 
 Current security controls include:
 
 ```text
 TLS
 Protocol validation
-File integrity verification
+Task validation
 Controlled file storage
 Path validation
-Secret protection
+File integrity verification
+Secret/configuration separation
 Centralized logging
+State consistency controls
+Authorized laboratory scope
 ```
 
-Detailed security requirements are maintained in
-[`SECURITY.md`](../SECURITY.md).
-
-Threat analysis and countermeasure mapping are documented separately in:
+Security documentation is maintained in:
 
 ```text
-threat-model.md
-kill-chain-analysis.md
-countermeasures.md
+docs/threat-model.md
+docs/countermeasures.md
+docs/kill-chain-analysis.md
 ```
 
-These documents are currently being developed.
+The countermeasure catalogue maps security controls to their validation strategy.
+
+The project does not currently claim that all security controls are implemented or validated.
 
 ---
 
-# 22. Required Project Documentation
+# 27. Agent Authentication
 
-The project documentation must cover at least the following areas:
+**Requirement / Security Property:** Establish how the C2 determines whether an Agent connection should be trusted.
 
-| Documentation area | Repository location | Status |
+**Priority:** Required security decision
+
+**Status:** Open
+
+## Current Architecture
+
+`REGISTER` identifies the Agent over an already-established communication Session.
+
+However:
+
+```text
+Agent identification
+        ≠
+Agent authentication
+```
+
+The exact authentication mechanism has not yet been finalized.
+
+## Implementation
+
+Tracked through the transport, registration, and protocol components once the mechanism is selected.
+
+Potential implementation areas include:
+
+```text
+agent/transport/
+agent/protocol/
+c2_server/transport/
+c2_server/protocol/
+config/
+```
+
+## Documentation
+
+- `DECISIONS.md`
+- `docs/countermeasures.md`
+- `docs/protocol.md`
+
+## Validation
+
+The final mechanism must define tests for:
+
+- valid Agent authentication;
+- invalid authentication;
+- unknown Agent;
+- conflicting Agent identity;
+- reconnection;
+- authentication failure handling.
+
+This requirement must be resolved before the security model can be considered complete.
+
+---
+
+# 28. Additional Transport Support
+
+**Requirement:** Additional transports beyond TCP/TLS.
+
+**Priority:** Bonus
+
+**Status:** Bonus / Future
+
+The transport architecture is intentionally abstracted:
+
+```text
+Transport Interface
+       ├── TCP/TLS
+       ├── HTTP
+       └── Other future transports
+```
+
+TCP/TLS is the MVP transport.
+
+Additional transports must not require rewriting the protocol or core business logic.
+
+No additional transport is considered implemented or validated until explicitly added and tested.
+
+---
+
+# 29. Required Project Documentation
+
+The project documentation must cover the following areas:
+
+| Documentation | Location | Current role |
 |---|---|---|
-| Protocol | `docs/protocol.md` | Work in Progress |
-| Architecture | `ARCHITECTURE.md` | Work in Progress |
-| Network architecture | `docs/network-architecture.md` | To be developed |
-| Task lifecycle | `docs/task-lifecycle.md` | Work in Progress |
-| File transfer | `docs/file-transfer.md` | Work in Progress |
-| Data model | `docs/data-model.md` | Work in Progress |
-| Kill Chain analysis | `docs/kill-chain-analysis.md` | To be developed |
-| Countermeasures | `docs/countermeasures.md` | To be developed |
-| Threat model | `docs/threat-model.md` | To be developed |
-| Testing strategy | `docs/testing-strategy.md` | Work in Progress |
+| Architecture | `ARCHITECTURE.md` | System architecture and component boundaries |
+| Decisions | `DECISIONS.md` | Architectural and technical decisions |
+| Data model | `docs/data-model.md` | Domain entities and relationships |
+| State machines | `docs/state-machines.md` | Authoritative lifecycle states and transitions |
+| Protocol | `docs/protocol.md` | Message definitions and protocol behaviour |
+| Protocol-state transitions | `docs/protocol-state-transition.md` | Mapping protocol events to state changes |
+| Reconnection / synchronization | `docs/reconnection-and-synchronization.md` | Recovery and reconciliation |
+| Task lifecycle | `docs/task-lifecycle.md` | Task lifecycle and recovery |
+| Network architecture | `docs/network-architecture.md` | Network topology and transport boundaries |
+| File transfer | `docs/file-transfer.md` | File-transfer architecture and behaviour |
+| Threat model | `docs/threat-model.md` | Threat identification |
+| Countermeasures | `docs/countermeasures.md` | Security protections |
+| Testing strategy | `docs/testing-strategy.md` | Verification strategy |
+| Requirements mapping | `docs/requirements-mapping.md` | Requirement traceability |
 
-Additional project documentation is maintained in the repository root:
+Additional repository documentation may include:
 
 ```text
 README.md
-SECURITY.md
-DECISIONS.md
 CONTRIBUTING.md
 ```
 
----
-
-# 23. Bonus Features
-
-The following features are currently considered extensions rather than
-mandatory MVP requirements:
-
-| Feature | Current status |
-|---|---|
-| TUI interface | Bonus / Future |
-| Web interface | Bonus / Future |
-| HTTP transport | Bonus / Future |
-| DNS transport | Bonus / Future |
-| Windows agent | Bonus / Future |
-| Additional security features | To be evaluated |
-
-Bonus features should only be prioritized once the mandatory functionality is
-stable and validated.
+Security-specific material should reference `docs/countermeasures.md` rather than an obsolete standalone `SECURITY.md`.
 
 ---
 
-# 24. Requirement → Test Traceability
+# 30. Bonus Features
 
-The final project should maintain a direct relationship between important
-requirements and their validation.
+The following features are currently considered extensions rather than mandatory MVP requirements:
+
+| Feature | Priority | Current status |
+|---|---|---|
+| TUI interface | Bonus | Future |
+| Web interface | Bonus | Future |
+| HTTP transport | Bonus | Future |
+| Additional transport | Bonus | Future |
+| Windows Agent | Bonus | Future |
+| Additional security features | Bonus | To be evaluated |
+
+Bonus features should only be prioritized once mandatory functionality is stable and sufficiently validated.
+
+---
+
+# 31. Requirement → Implementation → Test Traceability
+
+The final project should maintain a direct relationship between important requirements and their validation.
 
 The intended model is:
 
@@ -962,15 +1734,19 @@ Test / Demonstration
 
 Examples:
 
+### Multi-Agent support
+
 ```text
-Multi-agent support
+Multi-Agent support
     ↓
 AgentManager + SessionManager
     ↓
-Implementation
+C2 implementation
     ↓
-Multi-agent integration test
+Multi-Agent integration test
 ```
+
+### File transfer
 
 ```text
 File transfer
@@ -979,22 +1755,48 @@ FileManager + File Storage + Protocol
     ↓
 Implementation
     ↓
-Bidirectional file-transfer test
+Bidirectional / multi-chunk transfer tests
 ```
+
+### Secure communication
 
 ```text
 Secure communication
     ↓
-Transport / TCP-TLS
+TCP/TLS Transport
     ↓
 Implementation
     ↓
-TLS communication test
+TLS communication tests
+```
+
+### State synchronization
+
+```text
+Reconnection / synchronization
+    ↓
+SessionManager + SynchronizationManager
+    ↓
+Implementation
+    ↓
+Disconnect / reconnect / reconciliation tests
+```
+
+### Task execution
+
+```text
+Task execution
+    ↓
+TaskManager + Executor + Commands
+    ↓
+Implementation
+    ↓
+Task lifecycle / execution tests
 ```
 
 ---
 
-# 25. Validation Status
+# 32. Validation Status
 
 A requirement should not be considered complete merely because code exists.
 
@@ -1003,6 +1805,8 @@ The preferred progression is:
 ```text
 Planned
    ↓
+In Progress
+   ↓
 Implemented
    ↓
 Tested
@@ -1010,45 +1814,47 @@ Tested
 Validated
 ```
 
-A requirement is considered **Validated** only when the intended behaviour
-has been demonstrated through appropriate testing or project validation.
+A requirement is considered **Validated** only when the intended behaviour has been demonstrated through appropriate testing or project validation.
+
+For requirements involving documentation, validation may also require inspection of the corresponding document and consistency with the implementation.
 
 ---
 
-# 26. Open Requirements and Design Questions
+# 33. Open Requirements and Design Questions
 
-Some requirements depend on design decisions that are not yet finalized.
+The following areas remain open or implementation-dependent:
 
-These include:
-
-- exact agent authentication mechanism;
-- exact protocol schema;
-- exact session lifecycle;
-- exact task timeout/retry behaviour;
-- exact file-transfer state machine;
+- exact Agent authentication mechanism;
+- exact protocol serialization format;
+- exact protocol error contract;
 - exact database schema;
 - exact asynchronous implementation;
-- exact `SELF_DESTRUCT` interpretation;
-- exact CLI command set.
+- exact Task timeout and retry behaviour;
+- exact file-transfer recovery and resumability behaviour;
+- exact `PERSISTENCE` implementation;
+- exact `SELF_DESTRUCT` behaviour;
+- exact CLI command set;
+- exact transport security configuration.
 
-Unresolved design questions should not be represented as implemented
-requirements.
+These questions are tracked through `DECISIONS.md` and the relevant detailed specification.
 
-Significant decisions should be recorded in
-[`DECISIONS.md`](../DECISIONS.md).
+Open decisions must not be represented as validated requirements.
 
 ---
 
-# 27. Maintenance Rule
+# 34. Maintenance Rule
 
 This document must be updated when:
 
 - a requirement is clarified;
+- an architectural decision changes;
+- an implementation area changes;
+- a requirement enters implementation;
 - a requirement is implemented;
 - a requirement is validated;
-- an architectural component changes;
 - a bonus feature is added;
-- a test demonstrates successful validation.
+- a test demonstrates successful validation;
+- a requirement is explicitly moved out of scope.
 
 The objective is to maintain a reliable chain:
 
@@ -1062,5 +1868,4 @@ Implementation
 Validation
 ```
 
-so that the final project can clearly demonstrate how each requirement was
-addressed.
+The requirements mapping should therefore be treated as a **living project traceability document**, not as a static description written only at the end of development.
