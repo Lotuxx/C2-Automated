@@ -13,66 +13,93 @@ Security requirement
    ↓
 Countermeasure
    ↓
+Implementation
+   ↓
 Verification / test
 ```
 
-The document focuses on the protections that are relevant to the architecture and implementation of C2-AUTOMATED.
+The document focuses on protections that are relevant to the architecture and implementation of C2-AUTOMATED.
 
-It does not claim that every threat is completely eliminated. Some risks are reduced through technical controls, while others remain accepted, partially addressed, or outside the project scope.
+It does not claim that every threat is completely eliminated. Some risks are reduced through technical controls, while others remain accepted, partially addressed, open, or outside the project scope.
+
+The countermeasures described here are intended to remain consistent with:
+
+- `ARCHITECTURE.md`
+- `DECISIONS.md`
+- `docs/data-model.md`
+- `docs/state-machines.md`
+- `docs/protocol.md`
+- `docs/protocol-state-transition.md`
+- `docs/reconnection-and-synchronization.md`
+- `docs/task-lifecycle.md`
+- `docs/file-transfer.md`
+- `docs/network-architecture.md`
+- `docs/testing-strategy.md`
+- `docs/requirements-mapping.md`
 
 ---
 
-## 2. Relationship with Other Documents
+# 2. Relationship with Other Documents
 
 The security documentation is organised as follows:
 
 ```text
-ARCHITECTURE.md
-        │
-        ▼
-Threat model
-        │
-        ▼
-Security requirements
-        │
-        ▼
+Architecture
+     │
+     ▼
+Threat Model
+     │
+     ▼
+Security Requirements
+     │
+     ▼
 Countermeasures
-        │
-        ▼
+     │
+     ▼
+Implementation
+     │
+     ▼
 Testing
 ```
-
-The main references are:
 
 | Document | Purpose |
 |---|---|
 | `ARCHITECTURE.md` | Defines system structure and component boundaries. |
-| `SECURITY.md` | Defines general security principles and security boundaries. |
 | `DECISIONS.md` | Records accepted architectural and project decisions. |
 | `docs/threat-model.md` | Identifies threats and their priorities. |
 | `docs/countermeasures.md` | Defines the corresponding protections. |
-| `docs/testing-strategy.md` | Defines how those protections are verified. |
+| `docs/state-machines.md` | Defines authoritative system state machines. |
+| `docs/protocol.md` | Defines protocol messages and their structure. |
+| `docs/task-lifecycle.md` | Defines task lifecycle and recovery behaviour. |
+| `docs/file-transfer.md` | Defines file-transfer behaviour and security properties. |
+| `docs/network-architecture.md` | Defines network boundaries and transport architecture. |
+| `docs/testing-strategy.md` | Defines how protections are verified. |
 | `docs/requirements-mapping.md` | Tracks requirements through implementation and validation. |
+
+Security documentation must describe the actual project design rather than presenting future capabilities as already implemented.
 
 ---
 
-## 3. Security Objectives
+# 3. Security Objectives
 
 The countermeasures are designed around the following objectives:
 
 1. Protect communications between the C2 server and agents.
-2. Prevent malformed or unexpected protocol messages from being accepted blindly.
-3. Preserve the integrity of task and result handling.
-4. Prevent uncontrolled filesystem access.
-5. Limit the impact of endpoint command execution.
-6. Protect persisted project data.
-7. Provide sufficient logging for security-relevant events.
-8. Prevent accidental or uncontrolled lifecycle operations.
-9. Maintain clear security boundaries between the major components.
+2. Treat all received protocol data as untrusted input.
+3. Prevent malformed or unsupported protocol messages from reaching business logic.
+4. Preserve the integrity of task, result, and transfer relationships.
+5. Prevent uncontrolled filesystem access.
+6. Keep command execution behind explicit validation and execution boundaries.
+7. Protect persisted project data and avoid unnecessary sensitive-data storage.
+8. Provide sufficient logging for security-relevant events.
+9. Prevent uncontrolled lifecycle operations.
+10. Maintain clear security boundaries between major components.
+11. Preserve state consistency across disconnections and reconnections.
+12. Restrict the system to explicitly authorized laboratory environments.
 
 ---
 
-## 4. Countermeasure Status
+# 4. Countermeasure Status
 
 The following status values are used in this document.
 
@@ -83,6 +110,7 @@ The following status values are used in this document.
 | **Implemented** | Countermeasure is implemented in the project. |
 | **Validated** | Countermeasure has been implemented and verified through testing. |
 | **Accepted** | The remaining risk is consciously accepted within the project scope. |
+| **Open** | The required behaviour or security mechanism has not yet been sufficiently defined. |
 | **Out of scope** | The risk or control is not addressed by this project. |
 
 Implementation and validation status should ultimately be synchronized with `docs/requirements-mapping.md`.
@@ -93,28 +121,29 @@ Implementation and validation status should ultimately be synchronized with `doc
 
 | ID | Threat / Security area | Countermeasure | Status |
 |---|---|---|---|
-| `CM-001` | Network interception | Use TLS for C2 communication. | Planned / implementation-tracked |
+| `CM-001` | Network interception | Use TLS for C2 communication. | Planned |
 | `CM-002` | Weak transport configuration | Centralize and validate TLS configuration. | Planned |
 | `CM-003` | Malformed protocol messages | Validate message structure before processing. | Planned |
 | `CM-004` | Unsupported protocol messages | Explicitly validate message types and protocol versions. | Planned |
 | `CM-005` | Message/task confusion | Use explicit correlation identifiers. | Planned |
-| `CM-006` | Unauthorized or invalid task data | Validate task fields and command parameters before execution. | Planned |
-| `CM-007` | Unsafe command execution | Keep command dispatch behind the executor layer. | Planned |
+| `CM-006` | Invalid task data | Validate task fields and command parameters before execution. | Planned |
+| `CM-007` | Unsafe command execution | Keep command dispatch behind the Executor and explicit command layer. | Planned |
 | `CM-008` | Uncontrolled filesystem access | Restrict file operations to controlled project workspaces. | Planned |
-| `CM-009` | Path traversal | Validate and normalize file paths before filesystem operations. | Planned |
-| `CM-010` | File integrity errors | Use transfer metadata and integrity verification. | Planned |
+| `CM-009` | Path traversal | Normalize and validate paths before filesystem operations. | Planned |
+| `CM-010` | File integrity errors | Use transfer metadata and cryptographic integrity verification. | Planned |
 | `CM-011` | Large-file resource exhaustion | Process transfers incrementally rather than loading complete files into memory. | Planned |
 | `CM-012` | Temporary-file leakage | Use dedicated temporary storage and clean up incomplete transfers. | Planned |
-| `CM-013` | Database integrity problems | Access SQLite through the storage abstraction. | Planned |
+| `CM-013` | Database integrity / access problems | Access persistent data through the storage abstraction and controlled database operations. | Planned |
 | `CM-014` | Sensitive data exposure in logs | Avoid logging secrets and unnecessary sensitive values. | Planned |
-| `CM-015` | Operational traceability | Log security-relevant connection, task, result, and error events. | Planned |
-| `CM-016` | Configuration/secrets exposure | Keep secrets outside source code and centralize configuration. | Planned |
-| `CM-017` | Persistence abuse | Restrict `PERSISTENCE` to the explicitly defined laboratory behaviour. | Open |
+| `CM-015` | Operational traceability | Log security-relevant connection, task, result, transfer, and error events. | Planned |
+| `CM-016` | Configuration/secrets exposure | Centralize configuration and keep secrets outside source code. | Planned |
+| `CM-017` | Persistence abuse | Restrict `PERSISTENCE` to explicitly defined laboratory behaviour. | Open |
 | `CM-018` | Uncontrolled self-destruction | Bound `SELF_DESTRUCT` to an explicitly defined and controlled scope. | Open |
-| `CM-019` | Multi-agent state confusion | Keep agent identity separate from communication session state. | Planned |
-| `CM-020` | Asynchronous task inconsistency | Persist task states and maintain explicit task/result relationships. | Planned |
+| `CM-019` | Multi-agent state confusion | Keep Agent identity separate from communication Session state. | Planned |
+| `CM-020` | Asynchronous task inconsistency | Persist task state and maintain explicit Task/Result relationships. | Planned |
 | `CM-021` | Security regression | Maintain security-focused unit, integration, and end-to-end tests. | Planned |
 | `CM-022` | Unauthorized deployment | Restrict project use to explicitly authorized laboratory environments. | Accepted / scope control |
+| `CM-023` | Agent identity / authentication uncertainty | Define and implement the mechanism used to establish trust in an Agent connection. | Open |
 
 ---
 
@@ -122,9 +151,9 @@ Implementation and validation status should ultimately be synchronized with `doc
 
 ## 6.1 TLS
 
-The mandatory communication mechanism is TCP/TLS.
+The mandatory MVP communication mechanism is TCP/TLS.
 
-TLS is used to protect communications in transit between the C2 server and the agent.
+TLS protects communications in transit between the C2 server and the Agent.
 
 ```text
 C2 Server
@@ -137,7 +166,7 @@ C2 Server
   Agent
 ```
 
-This addresses risks associated with interception or modification of network traffic.
+This addresses risks associated with interception and modification of network traffic.
 
 ### Countermeasure
 
@@ -145,42 +174,42 @@ This addresses risks associated with interception or modification of network tra
 
 The transport implementation must use TLS rather than transmitting application data directly over unencrypted TCP.
 
+File-transfer traffic uses the same protected transport. A separate application-level encryption mechanism for files is not mandatory for the MVP.
+
 ### Verification
 
 Tests should verify that:
 
 - the transport establishes a TLS connection;
-- plaintext communication is not accepted by the configured secure endpoint;
-- certificate or TLS configuration errors are handled correctly;
-- communication failures do not silently downgrade to plaintext.
+- the secure endpoint does not accept unintended plaintext communication;
+- TLS configuration or certificate errors are handled correctly;
+- communication does not silently downgrade to plaintext;
+- file-transfer messages are transmitted through the protected transport.
 
 ---
 
-## 6.2 Protocol and Transport Separation
+## 6.2 TLS Configuration
 
-The application protocol is deliberately separated from the transport layer.
+TLS configuration must be centralized rather than duplicated across individual components.
 
-This means that the logical message structure does not depend directly on socket implementation details.
+### Countermeasure
 
-```text
-Protocol
-    │
-    ▼
-Transport
-    │
-    ▼
-Network
-```
+`CM-002`
 
-This separation also prevents protocol validation from being bypassed simply because a different transport is introduced later.
+The configuration layer should define the parameters required by the transport implementation.
 
-### Countermeasures
-
-`CM-002`, `CM-003`, `CM-004`
+Security-sensitive configuration must not be scattered throughout application code.
 
 ### Verification
 
-Tests should validate the protocol independently from the transport implementation.
+Tests should verify that:
+
+- invalid TLS configuration is rejected;
+- missing mandatory configuration is handled safely;
+- certificates and private material are not accidentally logged;
+- transport configuration is loaded consistently.
+
+The exact certificate and authentication model remains an implementation decision tracked separately.
 
 ---
 
@@ -188,9 +217,9 @@ Tests should validate the protocol independently from the transport implementati
 
 ## 7.1 Message Validation
 
-All messages received from an agent must be treated as untrusted input.
+All messages received from an Agent must be treated as untrusted input.
 
-The transport layer does not establish that a message is valid.
+The transport layer only establishes communication. It does not establish that a received message is valid.
 
 Messages must therefore be validated before reaching business logic.
 
@@ -222,8 +251,11 @@ Validation should include, where applicable:
 - required fields;
 - field types;
 - identifier format;
-- timestamp or sequencing constraints;
-- payload structure.
+- payload structure;
+- values within permitted ranges;
+- message-specific constraints.
+
+Malformed input must not be allowed to reach command execution or state-management logic.
 
 ---
 
@@ -233,9 +265,19 @@ The protocol uses explicit message types such as:
 
 ```text
 REGISTER
+REGISTER_ACK
 BEACON
+BEACON_ACK
 TASK
+TASK_ACK
+TASK_STATUS
+TASK_STATUS_QUERY
 RESULT
+PING
+PONG
+SYNC_STATE
+SYNC_STATE_RESPONSE
+SYNC_COMPLETE
 FILE_START
 FILE_CHUNK
 FILE_END
@@ -255,22 +297,19 @@ Tests should include:
 - unknown message type;
 - missing required fields;
 - incorrect field type;
-- invalid version;
-- malformed payload.
+- invalid protocol version;
+- malformed payload;
+- unexpected message in a given protocol context.
 
-The expected behaviour is rejection with an appropriate error rather than execution.
+The expected behaviour is controlled rejection rather than unintended execution.
 
 ---
 
 ## 7.3 Message and Task Correlation
 
-Tasks, results, and file transfers require explicit identifiers so that asynchronous communication does not cause responses to be associated with the wrong operation.
+Asynchronous communication requires explicit identifiers so that responses cannot be accidentally associated with the wrong operation.
 
-### Countermeasure
-
-`CM-005`
-
-Relevant identifiers include conceptual:
+Relevant identifiers include:
 
 ```text
 agent_id
@@ -281,24 +320,95 @@ transfer_id
 message_id
 ```
 
-The exact persistence model is defined separately in the data model and protocol documentation.
+These identifiers have different responsibilities and must not be substituted for one another.
+
+### Countermeasure
+
+`CM-005`
+
+Examples:
+
+```text
+Task
+  └── task_id
+       └── Result
+            └── result_id
+
+File Transfer
+  └── transfer_id
+
+Communication episode
+  └── session_id
+
+Logical endpoint identity
+  └── agent_id
+```
 
 ### Verification
 
 Tests should verify that:
 
-- a result references the correct task;
-- a task belongs to the correct agent;
-- a file-transfer message belongs to the correct transfer;
-- unrelated agents cannot accidentally share task state.
+- a Result references the correct Task;
+- a Task belongs to the correct Agent;
+- a transfer message references the correct Transfer;
+- messages received through one Session cannot accidentally modify another Agent's state;
+- duplicate identifiers are handled according to protocol rules.
 
 ---
 
-# 8. Task and Command Execution Security
+# 8. Agent Identity and Authentication
 
-## 8.1 Validation Before Execution
+The architecture distinguishes:
 
-Tasks received from the C2 must not be passed directly to an operating-system command interpreter.
+```text
+Agent identity
+      ≠
+Communication Session
+```
+
+An Agent may reconnect and therefore create a new Session without becoming a new logical Agent.
+
+However, persistent Agent identity does not by itself constitute a complete authentication mechanism.
+
+### Countermeasure
+
+`CM-023`
+
+The exact mechanism by which the C2 establishes trust in an Agent remains an open security decision.
+
+The project must distinguish between:
+
+```text
+Identification
+    =
+"Which Agent claims to be communicating?"
+
+Authentication
+    =
+"Why should the C2 trust that claim?"
+```
+
+This distinction is important because `REGISTER` currently identifies an Agent over an already-established transport connection.
+
+The final authentication mechanism must be explicitly defined before the security model can be considered complete.
+
+### Verification
+
+Tests should eventually cover:
+
+- valid Agent registration;
+- invalid or incomplete identity data;
+- duplicate or conflicting identity claims;
+- rejected authentication material where applicable;
+- reconnection using an established Agent identity.
+
+---
+
+# 9. Task and Command Execution Security
+
+## 9.1 Validation Before Execution
+
+Tasks received from the C2 must not be passed directly to an uncontrolled operating-system command interpreter.
 
 The intended flow is:
 
@@ -314,29 +424,34 @@ Executor
 Command implementation
  ↓
 Execution
+ ↓
+Result
 ```
 
 ### Countermeasures
 
 `CM-006`, `CM-007`
 
-The executor is the boundary between the task model and endpoint execution.
+The Executor is the boundary between the Task model and endpoint command execution.
+
+Command-specific implementations remain behind the command layer.
 
 ### Verification
 
-Tests should verify:
+Tests should verify that:
 
 - unsupported commands are rejected;
 - missing parameters are rejected;
 - invalid parameter types are rejected;
-- malformed tasks never reach command execution;
-- execution errors are returned as controlled results.
+- malformed Tasks never reach command execution;
+- execution errors become controlled Results;
+- command handlers cannot bypass Task validation.
 
 ---
 
-## 8.2 Command Separation
+## 9.2 Explicit Command Separation
 
-Supported operations remain explicit:
+The supported command categories are explicitly separated:
 
 ```text
 SHELL
@@ -346,19 +461,26 @@ PERSISTENCE
 SELF_DESTRUCT
 ```
 
-The project does not use a single uncontrolled handler containing every operation.
+The project does not rely on one unrestricted handler containing every operation.
 
-This separation makes command-specific validation and testing possible.
+This separation allows each capability to have:
+
+- its own validation;
+- its own implementation;
+- its own platform handling;
+- its own security tests.
+
+The exact implementation of `PERSISTENCE` and `SELF_DESTRUCT` remains open and is therefore subject to additional security constraints described below.
 
 ---
 
-# 9. File Handling Security
+# 10. File Handling Security
 
-## 9.1 Controlled File Workspaces
+## 10.1 Controlled File Workspaces
 
 File operations are restricted to dedicated project-controlled directories.
 
-The server and agent use:
+The C2 and Agent use controlled file areas such as:
 
 ```text
 data/
@@ -374,13 +496,15 @@ The logical `FileManager` remains separate from the physical filesystem implemen
 
 `CM-008`
 
-This reduces the risk that a file operation accidentally targets arbitrary filesystem locations.
+This reduces the risk that a transfer or file operation accidentally targets an arbitrary filesystem location.
+
+The storage interface provides the boundary between logical file operations and physical filesystem access.
 
 ---
 
-## 9.2 Path Validation
+## 10.2 Path Validation
 
-User- or agent-provided paths must not be trusted directly.
+Agent- or operator-provided paths must not be trusted directly.
 
 Path handling should:
 
@@ -423,62 +547,106 @@ Tests should cover:
 
 ---
 
-## 9.3 Integrity Verification
+## 10.3 File Transfer Integrity
 
-File transfers should include enough metadata to verify that the received file corresponds to the intended transfer.
+File transfers use explicit transfer identifiers and metadata.
 
-A cryptographic hash such as SHA-256 can be used as an integrity value.
+A cryptographic hash such as SHA-256 may be used to verify the integrity of a reconstructed file.
 
 ### Countermeasure
 
 `CM-010`
 
-The transfer model is:
+Conceptually:
 
 ```text
+Original file
+     │
+     ▼
+Cryptographic hash
+     │
+     ▼
 FILE_START
-     ↓
+     │
+     ▼
 FILE_CHUNK
-     ↓
-FILE_CHUNK
-     ↓
+     │
+     ▼
 ...
-     ↓
+     │
+     ▼
 FILE_END
-     ↓
-Integrity verification
-     ↓
-Promotion to final location
+     │
+     ▼
+Reconstructed file
+     │
+     ▼
+Hash verification
+     │
+ ┌───┴────┐
+ │        │
+match   mismatch
+ │        │
+ ▼        ▼
+valid    reject
 ```
+
+This provides a distinction between:
+
+```text
+TLS
+→ confidentiality and transport-level integrity
+
+File hash
+→ end-to-end integrity verification of the transferred artifact
+```
+
+Application-level encryption of the stored file is not mandatory for the MVP.
 
 ---
 
-## 9.4 Incremental Processing
+## 10.4 Incremental Processing
 
-Files should not be loaded entirely into memory for transfer.
+Files must not need to exist as complete in-memory objects during transfer.
 
-The project instead uses incremental chunks.
+The transfer mechanism processes data incrementally:
+
+```text
+chunk
+  ↓
+write/process
+  ↓
+chunk
+  ↓
+write/process
+  ↓
+chunk
+  ↓
+...
+```
 
 ### Countermeasure
 
 `CM-011`
 
-This reduces memory pressure for larger files.
+This reduces memory pressure and makes the file-transfer subsystem more suitable for larger files.
 
 ### Verification
 
 Tests should include files of different sizes and verify that:
 
 - transfers complete correctly;
-- chunk order is handled correctly;
-- incomplete transfers remain temporary;
-- transfer state survives expected communication interruptions.
+- chunks are processed according to the transfer contract;
+- incomplete transfers remain incomplete;
+- large transfers do not require loading the entire file into memory.
+
+The exact chunk sizing, ordering, and resumability rules remain implementation details defined by `docs/file-transfer.md`.
 
 ---
 
-## 9.5 Temporary Storage
+## 10.5 Temporary Storage
 
-Incomplete or reconstructed files should remain in the temporary workspace until the transfer has been successfully validated.
+Incomplete or reconstructed files remain in temporary storage until the transfer has successfully completed its validation process.
 
 Only after successful completion should the data be promoted to its final location.
 
@@ -486,17 +654,19 @@ Only after successful completion should the data be promoted to its final locati
 
 `CM-012`
 
-This prevents partially received files from being treated as complete.
+This prevents partially received data from being treated as a completed artifact.
+
+Temporary transfer data should also be cleaned up when a transfer is definitively abandoned or fails according to the transfer lifecycle.
 
 ---
 
-# 10. Persistence and Storage Security
+# 11. Persistence and Storage Security
 
-## 10.1 Database Abstraction
+## 11.1 Database Abstraction
 
 SQLite is the selected MVP persistence backend.
 
-Application components should access the database through the storage abstraction rather than embedding SQL logic throughout the system.
+Application components should access persistent data through the storage abstraction rather than embedding database operations throughout the system.
 
 ### Countermeasure
 
@@ -508,50 +678,83 @@ The intended structure is:
 Core
  │
  ▼
-Storage Interface
+Database Interface
  │
  ▼
 SQLite
 ```
 
-### Benefits
+This provides a clear boundary for:
 
-This reduces coupling and creates a clear location for future storage-related security controls.
+- database access;
+- transaction handling;
+- persistence errors;
+- future backend replacement;
+- storage-related testing.
 
 ---
 
-## 10.2 Persistent Metadata
+## 11.2 Persistent Metadata
 
-Persisted information should be limited to information required by the project, such as:
+Persistent information should be limited to information required by the project, such as:
 
-- agents;
-- sessions;
-- tasks;
-- results;
-- relevant transfer metadata.
+- Agents;
+- Sessions;
+- Tasks;
+- Results;
+- File-transfer metadata;
+- relevant Events.
 
 The project should avoid storing sensitive information unnecessarily.
 
+The database stores structured metadata, while transferred file contents remain in the filesystem storage layer.
+
 ---
 
-# 11. Logging and Traceability
+## 11.3 C2 Record and Agent Recovery State
 
-## 11.1 Centralized Logging
+The C2 maintains the authoritative historical server-side record required by the project.
+
+The Agent maintains lightweight state necessary for recovery and synchronization.
+
+```text
+C2
+└── persistent historical record
+
+Agent
+└── lightweight recovery state
+```
+
+This separation reduces the need for the Agent to maintain a complete copy of server-side history.
+
+It also supports reconciliation after temporary communication loss.
+
+---
+
+# 12. Logging and Traceability
+
+## 12.1 Centralized Logging
 
 Security-relevant events should be logged consistently.
 
 Examples include:
 
 ```text
-agent connection
-agent disconnection
-task creation
-task dispatch
-task failure
-result reception
-file transfer failure
-protocol validation failure
-transport error
+Agent registration
+Session establishment
+Session disconnection
+Session closure
+Beacon / acknowledgement
+Task creation
+Task dispatch
+Task acknowledgement
+Task execution
+Task failure
+Result reception
+File-transfer events
+Protocol validation failure
+Transport error
+Synchronization events
 ```
 
 ### Countermeasure
@@ -560,9 +763,11 @@ transport error
 
 Logging is kept separate from core business logic.
 
+Where appropriate, security-relevant events should also be represented through the project's Event model so that operational history remains distinguishable from raw protocol Messages.
+
 ---
 
-## 11.2 Sensitive Information
+## 12.2 Sensitive Information
 
 Logs should not contain:
 
@@ -570,21 +775,21 @@ Logs should not contain:
 - private keys;
 - secrets;
 - unnecessary file contents;
-- sensitive configuration values.
+- unnecessary sensitive configuration values.
 
 ### Countermeasure
 
 `CM-014`
 
-The goal is to make logs useful for debugging and audit without creating a secondary source of sensitive-data exposure.
+The objective is to make logs useful for debugging, traceability, and security analysis without creating a secondary source of sensitive-data exposure.
 
 ---
 
-# 12. Configuration and Secret Management
+# 13. Configuration and Secret Management
 
 Configuration is centralized rather than distributed throughout individual modules.
 
-Secrets should not be hard-coded into source files or committed to the repository.
+Secrets must not be hard-coded into source files or committed to the repository.
 
 ### Countermeasure
 
@@ -604,25 +809,42 @@ from source code.
 
 ### Verification
 
-Repository checks should verify that:
+Repository and configuration tests should verify that:
 
-- test secrets are not committed accidentally;
-- configuration loading fails safely when mandatory secrets are missing;
-- secrets are not printed through normal logs.
+- test secrets are not accidentally committed;
+- mandatory security configuration is detected when missing;
+- secrets are not printed through normal logging;
+- environment-specific values are not embedded in reusable source code.
+
+Local certificates, private keys, databases, logs, and generated transfer files should remain outside source-controlled project files where appropriate.
 
 ---
 
-# 13. Agent and Session Security
+# 14. Agent and Session Security
 
 The architecture distinguishes between:
 
 ```text
-Agent identity
-      ≠
-Communication session
+Agent
+ └── persistent logical identity
+
+Session
+ └── individual communication episode
 ```
 
-An agent may reconnect and therefore create a new session without becoming a completely new logical agent.
+For example:
+
+```text
+Agent A001
+   │
+   ├── S041
+   │
+   ├── S042 = DISCONNECTED
+   │
+   └── S043 = CONNECTED
+```
+
+A disconnected Session is not reopened. A new connection creates a new Session.
 
 ### Countermeasure
 
@@ -630,9 +852,10 @@ An agent may reconnect and therefore create a new session without becoming a com
 
 This prevents state confusion between:
 
-- persistent agent identity;
+- persistent Agent identity;
+- communication history;
 - current communication state;
-- task ownership.
+- Task ownership.
 
 ### Verification
 
@@ -648,85 +871,154 @@ disconnect
 Session S002
 ```
 
-while preserving the same agent identity.
+while preserving the same Agent identity.
+
+They should also verify that an old Session is never incorrectly transitioned back to `CONNECTED`.
 
 ---
 
-# 14. Asynchronous Task Security
+# 15. Asynchronous Task Security
 
-Because the project supports asynchronous task handling, tasks may remain pending while an agent is unavailable.
+The project supports asynchronous task handling.
 
-The task lifecycle is explicitly tracked:
+Tasks may remain pending while an Agent is unavailable, and communication loss does not automatically prove that a Task has failed.
+
+The authoritative Task states are:
+
+```text
+PENDING
+WAITING_ACK
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+TIMEOUT
+CANCELLED
+```
+
+The normal lifecycle is:
 
 ```text
 PENDING
    ↓
-SENT
+WAITING_ACK
+   ↓
+QUEUED
    ↓
 RUNNING
    ↓
-COMPLETED
-```
-
-with a failure path:
-
-```text
-RUNNING
-   ↓
-FAILED
+COMPLETED / FAILED
 ```
 
 ### Countermeasure
 
 `CM-020`
 
-The server must retain enough task metadata to prevent:
+The C2 maintains the persistent Task lifecycle record, while the Agent provides execution evidence that can be reconciled after communication loss.
+
+This reduces the risk of:
 
 - accidental task duplication;
-- result association with the wrong task;
-- loss of task state after temporary disconnection.
+- incorrect Result association;
+- loss of task state after temporary disconnection;
+- treating missing communication as proof of execution failure.
 
 ### Verification
 
 Tests should simulate:
 
-- offline agent;
-- reconnecting agent;
-- multiple pending tasks;
-- delayed result;
-- failed execution;
-- multiple agents executing tasks simultaneously.
+- Agent unavailable before dispatch;
+- missing Task acknowledgement;
+- Agent disconnect during execution;
+- delayed Result;
+- Agent reconnection;
+- task recovery;
+- multiple pending Tasks;
+- multiple Agents executing Tasks simultaneously;
+- duplicate Task or Result messages.
 
 ---
 
-# 15. Persistence Security
+# 16. Task Recovery and `UNKNOWN`
 
-`PERSISTENCE` is a required capability but its exact implementation scope remains open.
+`UNKNOWN` is not a persistent Task state.
+
+It represents a recovery or reporting condition where the current execution state cannot yet be established reliably.
+
+For example:
+
+```text
+C2
+ │
+ │ Task RUNNING
+ ▼
+Communication lost
+ │
+ ▼
+Execution state uncertain
+ │
+ ▼
+Recovery / reconciliation
+```
+
+The C2 must avoid assuming:
+
+```text
+No response
+    =
+Task failed
+```
+
+or:
+
+```text
+No response
+    =
+Task stopped
+```
+
+### Security relevance
+
+This prevents incorrect recovery decisions from causing:
+
+- duplicate execution;
+- incorrect state transitions;
+- incorrect Results;
+- inconsistent multi-Agent state.
+
+This behaviour is verified through the task lifecycle and synchronization tests.
+
+---
+
+# 17. Persistence Capability Security
+
+`PERSISTENCE` is a required capability, but its exact implementation scope remains open.
 
 ### Countermeasure
 
 `CM-017`
 
-Before implementation is considered complete, the following must be explicitly defined:
+Before implementation is considered complete, the project must explicitly define:
 
 - supported persistence mechanism;
 - required permissions;
 - installation behaviour;
 - removal behaviour;
 - platform-specific differences;
-- cleanup responsibilities.
+- cleanup responsibilities;
+- laboratory restrictions.
 
 The implementation must remain within the project's authorized laboratory scope.
 
-The architecture must not treat “persistence” as permission to introduce arbitrary persistence mechanisms without a defined project requirement.
+The architecture must not interpret the `PERSISTENCE` command as permission to introduce arbitrary persistence mechanisms without a defined project requirement and corresponding security review.
 
 ---
 
-# 16. Self-Destruct Security
+# 18. Self-Destruct Capability Security
 
-`SELF_DESTRUCT` is also a required capability whose exact behaviour is currently open.
+`SELF_DESTRUCT` is a required capability whose exact behaviour remains open.
 
-This is tracked through `PRO-006`.
+This is tracked through `PRO-007` in `DECISIONS.md`.
 
 ### Countermeasure
 
@@ -734,7 +1026,7 @@ This is tracked through `PRO-006`.
 
 The final implementation must define a bounded lifecycle operation rather than unrestricted deletion.
 
-Possible scopes previously identified are:
+The possible conceptual scopes are:
 
 ```text
 A. Process termination only
@@ -745,84 +1037,101 @@ B. Process termination
 C. Process termination
    + project workspace cleanup
 
-D. Full agent removal
-   + persistence cleanup
+D. Full project Agent removal
+   + associated project cleanup
 ```
 
-One scope must be selected before implementation is considered fully defined.
+One scope must be explicitly selected before the feature is considered fully defined.
 
 ### Security requirement
 
-The behaviour should be:
+The behaviour must be:
 
 - explicit;
 - bounded;
 - predictable;
 - testable;
-- restricted to the intended project resources.
+- restricted to intended project resources.
+
+The implementation must not provide unrestricted deletion of arbitrary host resources.
 
 ---
 
-# 17. Laboratory Scope as a Security Control
+# 19. Laboratory Scope as a Security Control
 
-C2-AUTOMATED is intended for authorized laboratory use.
+C2-AUTOMATED is an academic project intended for authorized laboratory use.
 
-The project must not be presented as a system intended for deployment against third-party environments.
+Development, deployment, and testing must remain restricted to systems and environments for which explicit authorization exists.
 
 ### Countermeasure
 
 `CM-022`
 
-The authorization boundary itself is part of the project's risk control model.
+The authorization boundary is part of the project's risk-control model.
 
 Testing should therefore be performed using:
 
 ```text
 Owned systems
       or
-Authorized laboratory systems
+Explicitly authorized laboratory systems
       or
 Isolated virtual machines
       or
 Institution-provided exercises
 ```
 
-This does not replace technical controls, but it limits the operational environment in which the project is intended to be used.
+This does not replace technical controls.
+
+It limits the intended operational environment in which the project is developed and evaluated.
+
+The project must not be presented as a system intended for deployment against third-party environments.
 
 ---
 
-# 18. Security Testing
+# 20. Security Testing
 
-Countermeasures are not considered reliable merely because the corresponding code exists.
+Countermeasures are not considered reliable merely because corresponding code exists.
 
-They must be tested.
+They must be verified through testing.
 
-The testing strategy is therefore linked directly to the countermeasure catalogue.
+The testing strategy therefore links directly to this countermeasure catalogue.
 
 ### Example traceability
 
 | Countermeasure | Main test area |
 |---|---|
 | `CM-001` TLS | Transport / integration tests |
+| `CM-002` TLS configuration | Transport / configuration tests |
 | `CM-003` Protocol validation | Protocol unit tests |
+| `CM-004` Message types | Protocol validation tests |
 | `CM-005` Correlation | Protocol / integration tests |
+| `CM-006` Task validation | Task / command tests |
+| `CM-007` Executor boundary | Agent execution tests |
 | `CM-008` Controlled file workspace | File-storage tests |
 | `CM-009` Path validation | Security-focused filesystem tests |
-| `CM-010` Integrity | File-transfer integration tests |
+| `CM-010` File integrity | File-transfer integration tests |
 | `CM-011` Chunking | File-transfer tests |
-| `CM-015` Logging | Logging tests |
-| `CM-019` Agent/session separation | Session integration tests |
-| `CM-020` Async task handling | Multi-agent integration tests |
+| `CM-012` Temporary storage | File-transfer failure tests |
+| `CM-013` Database abstraction | Storage tests |
+| `CM-014` Sensitive logging | Logging tests |
+| `CM-015` Security events | Logging / event tests |
+| `CM-016` Secret separation | Configuration / repository checks |
 | `CM-017` Persistence | Command/security tests |
 | `CM-018` Self-destruct | Lifecycle/security tests |
+| `CM-019` Agent/session separation | Session integration tests |
+| `CM-020` Async task handling | Task / synchronization tests |
+| `CM-021` Security regression | Full security test suite |
+| `CM-022` Laboratory scope | Deployment / project-process control |
+| `CM-023` Agent authentication | Registration / transport security tests |
 
 Detailed test organisation remains defined in `docs/testing-strategy.md`.
 
 ---
 
-# 19. Countermeasure Priorities
+# 21. Countermeasure Priorities
 
-The security controls should be implemented according to risk and dependency.
+Security controls should be implemented according to risk and dependency.
 
 ## Priority 1 — Fundamental protections
 
@@ -833,22 +1142,23 @@ TLS
 Protocol validation
 Task validation
 Controlled file paths
-Secure file transfer handling
+Secure file-transfer handling
 Basic logging
-Configuration/secret separation
+Configuration / secret separation
 ```
 
-## Priority 2 — Robustness protections
+## Priority 2 — State and reliability protections
 
-These support reliable operation:
+These support reliable and secure asynchronous operation:
 
 ```text
 Task correlation
 Agent/session separation
-Asynchronous state management
+Explicit task lifecycle
+Synchronization and recovery
 Temporary-file handling
 Integrity verification
-Multi-agent isolation
+Multi-agent state isolation
 ```
 
 ## Priority 3 — Open capability-specific controls
@@ -856,6 +1166,7 @@ Multi-agent isolation
 These depend on the final design of:
 
 ```text
+Agent authentication
 PERSISTENCE
 SELF_DESTRUCT
 ```
@@ -864,24 +1175,26 @@ Their countermeasures cannot be considered complete until the underlying behavio
 
 ---
 
-# 20. Security Residual Risk
+# 22. Security Residual Risk
 
 Security controls reduce risk but do not eliminate it completely.
 
 Examples of residual risk include:
 
 - compromise of the host running the C2 server;
-- compromise of the laboratory endpoint;
+- compromise of a laboratory endpoint;
 - incorrect configuration;
 - implementation bugs;
 - weaknesses in underlying operating systems or libraries;
-- abuse of a legitimate project capability by an authorized operator.
+- compromise of credentials or authentication material if introduced;
+- misuse of a legitimate project capability by an authorized operator;
+- risks associated with capabilities whose exact implementation remains open.
 
 These residual risks should be documented rather than implicitly considered solved.
 
 ---
 
-# 21. Traceability Summary
+# 23. Traceability Summary
 
 The intended security traceability chain is:
 
@@ -907,7 +1220,7 @@ Countermeasures
     ├── CM-001
     ├── CM-002
     ├── ...
-    └── CM-022
+    └── CM-023
           │
           ▼
 Implementation
@@ -916,11 +1229,25 @@ Implementation
 Testing
 ```
 
-This creates a consistent link between the identified risk, the intended protection, and its validation.
+This creates a consistent link between:
+
+```text
+identified risk
+      ↓
+security requirement
+      ↓
+protection
+      ↓
+implementation
+      ↓
+verification
+```
+
+The exact threat and requirement identifiers must remain synchronized with `docs/threat-model.md` and `docs/requirements-mapping.md`.
 
 ---
 
-# 22. Final Security Position
+# 24. Final Security Position
 
 C2-AUTOMATED should not be considered secure simply because it uses TLS or because the architecture is modular.
 
@@ -931,22 +1258,26 @@ Secure transport
         +
 Protocol validation
         +
+Explicit identity / authentication model
+        +
 Controlled task execution
         +
 Controlled filesystem access
         +
-Integrity verification
+File integrity verification
         +
 Persistent-state protection
         +
-Logging
+Logging and traceability
+        +
+State reconciliation
         +
 Testing
         +
 Explicit laboratory scope
 ```
 
-The project therefore treats security as a property of the **complete system**, rather than a feature provided by a single component.
+Security is therefore treated as a property of the **complete system**, rather than a feature provided by a single component.
 
 The most important principle is:
 
