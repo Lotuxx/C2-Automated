@@ -1,4 +1,4 @@
-# PA - C2 automatisé (prototype de laboratoire)
+# PA - C2 automatisé
 
 > **Usage strictement pédagogique et local.** Exécuter uniquement dans une VM/WSL de test dédiée, sur des systèmes dont vous avez l'autorisation. Le serveur écoute par défaut sur `127.0.0.1`. Ne pas exposer le port sur un réseau public.
 
