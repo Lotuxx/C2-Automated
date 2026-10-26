@@ -74,7 +74,7 @@ def now() -> str:
 # ── Database class ────────────────────────────────────────────────────────────
 
 class Database:
-    """Asynchronous façade over a SQLite database for the C2 MVP.
+    """Asynchronous façade over a SQLite database for the C2 server.
 
     All public methods are coroutines.  They acquire ``self.lock`` before
     executing any SQL so that concurrent callers in the same asyncio event
@@ -158,6 +158,29 @@ class Database:
                 status    TEXT NOT NULL,        -- always a terminal TaskState value
                 output    TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS playbook_runs (
+                run_id         TEXT PRIMARY KEY,
+                playbook_name  TEXT NOT NULL,
+                agent_id       TEXT NOT NULL,
+                status         TEXT NOT NULL,
+                started_at     REAL,
+                ended_at       REAL,
+                error          TEXT,
+                created_at     TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS playbook_steps (
+                run_id      TEXT NOT NULL,
+                step_id     TEXT NOT NULL,
+                command     TEXT NOT NULL,
+                status      TEXT NOT NULL,
+                task_id     TEXT,
+                output      TEXT,
+                error       TEXT,
+                started_at  REAL,
+                ended_at    REAL,
+                retries     INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (run_id, step_id)
             );
             """)
             self.conn.commit()
@@ -719,12 +742,45 @@ class Database:
                 raise
             return True
 
+    async def clear_orphaned_replay_reservations(self) -> int:
+        """Remove ``__pending_*`` retry placeholders left by a server crash.
+
+        When auto-replay calls ``reserve_replay()`` and the server process dies
+        before ``mark_retried()`` runs, the placeholder remains indefinitely,
+        blocking future auto-replay for that task.  This method clears all such
+        placeholders so the tasks become eligible for replay on the next reconnect.
+
+        Called at server startup inside ``reconcile_process_restart()`` before
+        any session is accepted.
+
+        Returns the number of rows cleared.
+        """
+        async with self.lock:
+            self.conn.execute(
+                "UPDATE task_interruptions SET retry_task_id = NULL "
+                "WHERE retry_task_id LIKE '__pending_%'",
+            )
+            cleared = self.conn.execute("SELECT changes()").fetchone()[0]
+            if cleared:
+                self.conn.commit()
+        return cleared
+
     async def reconcile_process_restart(self) -> int:
         """Close orphaned sessions and record interrupted tasks on server restart.
 
         Must be called once during server startup, before accepting new peers.
         Does *not* replay any operations with uncertain outcomes.
+
+        Also clears ``__pending_*`` retry placeholders left by a crashed server
+        so those tasks are eligible for auto-replay on the next agent reconnect.
         """
+        # Clear stale placeholders outside the main lock to avoid re-entrancy.
+        cleared = await self.clear_orphaned_replay_reservations()
+        if cleared:
+            import logging as _log
+            _log.getLogger("c2").info(
+                "reconcile: cleared %d orphaned __pending_ replay reservation(s)", cleared
+            )
         async with self.lock:
             ts = now()
             rows = self.conn.execute(
@@ -958,3 +1014,95 @@ class Database:
             if self.conn:
                 self.conn.close()
                 self.conn = None
+
+    # ── Playbook run persistence ───────────────────────────────────────────────
+
+    async def save_playbook_run(self, run: dict) -> None:
+        """Persist or update a playbook run record and all its step records.
+
+        Designed for upsert: safe to call multiple times as the run progresses.
+        Uses ``INSERT OR REPLACE`` so a run's final state overwrites earlier
+        snapshots without risking primary-key conflicts.
+
+        Parameters
+        ----------
+        run : dict
+            The serialised PlaybookRun (from PlaybookRun.to_dict()).
+        """
+        async with self.lock:
+            ts = now()
+            self.conn.execute(
+                "INSERT OR REPLACE INTO playbook_runs "
+                "(run_id, playbook_name, agent_id, status, started_at, "
+                " ended_at, error, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    run["run_id"],
+                    run["playbook_name"],
+                    run["agent_id"],
+                    run["status"],
+                    run.get("started_at"),
+                    run.get("ended_at"),
+                    run.get("error"),
+                    ts,
+                ),
+            )
+            for step in run.get("steps", {}).values():
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO playbook_steps "
+                    "(run_id, step_id, command, status, task_id, "
+                    " output, error, started_at, ended_at, retries) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        run["run_id"],
+                        step["step_id"],
+                        step["command"],
+                        step["status"],
+                        step.get("task_id"),
+                        step.get("output"),
+                        step.get("error"),
+                        step.get("started_at"),
+                        step.get("ended_at"),
+                        step.get("retries", 0),
+                    ),
+                )
+            self.conn.commit()
+
+    async def load_playbook_runs(self, limit: int = 100) -> list[dict]:
+        """Load recent playbook runs from SQLite, newest first.
+
+        Used at server startup to restore the automation history so operators
+        can inspect runs from before a server restart.
+
+        Returns
+        -------
+        list[dict]
+            Each dict matches the PlaybookRun.to_dict() format with a nested
+            'steps' dict keyed by step_id.
+        """
+        async with self.lock:
+            run_rows = self.conn.execute(
+                "SELECT * FROM playbook_runs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            if not run_rows:
+                return []
+            run_ids = [r["run_id"] for r in run_rows]
+            placeholders = ",".join("?" * len(run_ids))
+            step_rows = self.conn.execute(
+                f"SELECT * FROM playbook_steps WHERE run_id IN ({placeholders})",
+                run_ids,
+            ).fetchall()
+
+        step_map: dict[str, dict] = {}
+        for s in step_rows:
+            d = dict(s)
+            rid = d.pop("run_id")
+            step_map.setdefault(rid, {})[d["step_id"]] = d
+
+        result = []
+        for r in run_rows:
+            rd = dict(r)
+            rd["steps"] = step_map.get(rd["run_id"], {})
+            result.append(rd)
+        return result
