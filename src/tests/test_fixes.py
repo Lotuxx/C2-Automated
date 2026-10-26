@@ -2465,39 +2465,65 @@ class TestPersistenceAllPlatforms(unittest.TestCase):
         self.assertTrue(removed)
         self.assertFalse(_unit_file().exists(), "Unit file must be deleted even without systemctl")
 
-    @unittest.skipUnless(__import__('platform').system() == "Darwin", "macOS only")
     def test_macos_plist_content(self):
-        """install_startup on macOS must write a valid launchd plist."""
-        from agent.persistence import _install_macos, _plist_file
+        """install_startup on macOS must write a valid launchd plist.
 
-        with unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=0)):
-            msg = _install_macos(["--server", "127.0.0.1"])
+        Runs on any platform by mocking Path.home() to a temp directory and
+        subprocess.run to avoid requiring launchctl or the Darwin OS.
+        """
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix="pa-macos-plist-") as tmpdir:
+            fake_home = Path(tmpdir)
+            with unittest.mock.patch("agent.persistence.Path") as MockPath:
+                # Make Path.home() return fake_home so _launchd_dir() stays in tmp.
+                # We need the rest of Path to work normally.
+                MockPath.home.return_value = fake_home
+                MockPath.side_effect = Path  # forward other calls to real Path
+                from agent.persistence import _install_macos, _plist_file
+                import importlib, agent.persistence as _pm
+                # Patch at the module level using real Path but fake home.
+                real_home = Path.home
+                with unittest.mock.patch.object(Path, "home", staticmethod(lambda: fake_home)):
+                    with unittest.mock.patch("subprocess.run",
+                                             return_value=unittest.mock.MagicMock(returncode=0)):
+                        msg = _install_macos(["--server", "127.0.0.1"])
+                    plist = _plist_file()
+            self.assertTrue(plist.is_file())
+            content = plist.read_text()
+            self.assertIn("com.pa-agent-lab", content)
+            self.assertIn("<key>RunAtLoad</key>", content)
+            self.assertIn("<key>KeepAlive</key>", content)
+            self.assertIn("agent.main", content)
+            self.assertIn("127.0.0.1", content)
+            self.assertIsInstance(msg, str)
 
-        plist = _plist_file()
-        self.assertTrue(plist.is_file())
-        content = plist.read_text()
-        self.assertIn("com.pa-agent-lab", content)
-        self.assertIn("<key>RunAtLoad</key>", content)
-        self.assertIn("<key>KeepAlive</key>", content)
-        self.assertIn("agent.main", content)
-        self.assertIn("127.0.0.1", content)
-        self.assertIsInstance(msg, str)
-        plist.unlink(missing_ok=True)
-
-    @unittest.skipUnless(__import__('platform').system() == "Darwin", "macOS only")
     def test_macos_remove(self):
-        from agent.persistence import _install_macos, _remove_macos, _plist_file
-        with unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=0)):
-            _install_macos([])
-        self.assertTrue(_plist_file().is_file())
-        with unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=0)):
-            removed = _remove_macos()
-        self.assertTrue(removed)
-        self.assertFalse(_plist_file().exists())
+        """remove_startup on macOS must unlink the plist and return True.
 
-    @unittest.skipUnless(__import__('platform').system() == "Windows", "Windows only")
+        Runs on any platform by mocking Path.home() to a temp directory.
+        """
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix="pa-macos-remove-") as tmpdir:
+            fake_home = Path(tmpdir)
+            with unittest.mock.patch.object(Path, "home", staticmethod(lambda: fake_home)):
+                from agent.persistence import _install_macos, _remove_macos, _plist_file
+                with unittest.mock.patch("subprocess.run",
+                                         return_value=unittest.mock.MagicMock(returncode=0)):
+                    _install_macos([])
+                self.assertTrue(_plist_file().is_file())
+                with unittest.mock.patch("subprocess.run",
+                                         return_value=unittest.mock.MagicMock(returncode=0)):
+                    removed = _remove_macos()
+            self.assertTrue(removed)
+            self.assertFalse(_plist_file().exists())
+
     def test_windows_install_uses_xml(self):
-        """install_startup on Windows must generate an XML task definition."""
+        """install_startup on Windows must generate an XML task definition.
+
+        Runs on any platform by mocking subprocess.run (no schtasks needed).
+        """
         from agent.persistence import _install_windows
         xml_files_used = []
 
@@ -2516,9 +2542,11 @@ class TestPersistenceAllPlatforms(unittest.TestCase):
         self.assertIsInstance(msg, str)
         self.assertIn("PA-Agent-Lab", msg)
 
-    @unittest.skipUnless(__import__('platform').system() == "Windows", "Windows only")
     def test_windows_xml_contains_no_shell_quoting_issues(self):
-        """The Windows XML task definition must embed arguments without shell quoting."""
+        """The Windows XML task definition must embed arguments without shell quoting.
+
+        Runs on any platform — _task_xml() is pure Python with no OS calls.
+        """
         from agent.persistence import _task_xml
         xml = _task_xml(["--server", "127.0.0.1 with spaces", "--ca", "path/with spaces.crt"])
         # Arguments must appear as separate <string> or as unquoted elements in XML
@@ -2885,6 +2913,26 @@ class TestRichCLIOutput(unittest.IsolatedAsyncioTestCase):
         self.assertIn("hostname", output)
         self.assertIn("testbox", output)
 
+    async def test_result_command_displays_output(self):
+        """Audit regression D/U1: `result <prefix>` must display the stored output.
+
+        This test covers the audit recommendation that operators must be able to
+        read task output from the CLI without opening the SQLite file directly.
+        """
+        async def setup(db):
+            await db.upsert_agent("agent-r", "boxr", "Linux")
+            await db.create_task("task-result-01", "agent-r", "echo", {"text": "hello audit"}, "PENDING")
+            for s in ("WAITING_ACK", "QUEUED", "RUNNING"):
+                await db.update_task_status("task-result-01", s)
+            await db.complete_task_with_result(
+                "task-result-01", "COMPLETED", "res-01", "agent-r", "hello audit"
+            )
+
+        _, output = await self._cli_run(["result task-result-01", "quit"], pre_setup=setup)
+        self.assertIn("task-result-01", output)
+        self.assertIn("COMPLETED", output)
+        self.assertIn("hello audit", output)
+
     async def test_unknown_command_shows_helpful_message(self):
         _, output = await self._cli_run(["notacommand", "quit"])
         self.assertIn("Unknown command", output)
@@ -2892,7 +2940,7 @@ class TestRichCLIOutput(unittest.IsolatedAsyncioTestCase):
 
     async def test_banner_shown_on_startup(self):
         _, output = await self._cli_run(["quit"])
-        self.assertIn("C2-MVP", output)
+        self.assertIn("PA-C2", output)
 
     async def test_result_interrupted_task_shows_reason(self):
         async def setup(db):
@@ -2903,3 +2951,323 @@ class TestRichCLIOutput(unittest.IsolatedAsyncioTestCase):
         _, output = await self._cli_run(["result t-int", "quit"], pre_setup=setup)
         self.assertIn("connection_lost", output)
         self.assertIn("retry", output.lower())
+
+
+# ── Residual: sysinfo macOS ifconfig method and cross-platform coverage ────────
+
+class TestSysinfoNetworkInterfaces(unittest.TestCase):
+    """Verify the four-method network interface enumeration chain."""
+
+    def _run_sysinfo(self) -> dict:
+        from agent.main import execute_allowed
+        import json
+        return json.loads(execute_allowed("sysinfo", {}))
+
+    def test_network_interfaces_present(self):
+        """sysinfo must always return a non-empty network_interfaces dict."""
+        data = self._run_sysinfo()
+        self.assertIn("network_interfaces", data)
+        self.assertIsInstance(data["network_interfaces"], dict)
+        self.assertTrue(data["network_interfaces"],
+                        "network_interfaces must not be empty")
+
+    def test_network_interfaces_values_are_lists(self):
+        """Each interface must map to a list of address strings."""
+        data = self._run_sysinfo()
+        for name, addrs in data["network_interfaces"].items():
+            with self.subTest(iface=name):
+                self.assertIsInstance(addrs, list)
+                self.assertTrue(addrs, f"Interface {name} has empty address list")
+                for addr in addrs:
+                    self.assertIsInstance(addr, str)
+
+    def test_method4_fallback_when_all_tools_absent(self):
+        """When ip/ifconfig/ioctl all fail, gethostbyname fallback must succeed."""
+        from agent.main import execute_allowed
+        import json
+        import unittest.mock as m
+
+        # Patch subprocess.run to simulate missing ip and ifconfig
+        orig_run = __import__('subprocess').run
+
+        def fail_network_cmds(cmd, **kw):
+            if isinstance(cmd, list) and cmd[0] in ("ip", "ifconfig"):
+                r = m.MagicMock()
+                r.returncode = 127  # command not found
+                r.stdout = ""
+                return r
+            return orig_run(cmd, **kw)
+
+        # Also patch fcntl to simulate Windows (no ioctl)
+        import sys
+        real_fcntl = sys.modules.get("fcntl")
+        sys.modules["fcntl"] = None  # type: ignore
+
+        try:
+            with m.patch("subprocess.run", side_effect=fail_network_cmds):
+                data = json.loads(execute_allowed("sysinfo", {}))
+        finally:
+            if real_fcntl is None:
+                sys.modules.pop("fcntl", None)
+            else:
+                sys.modules["fcntl"] = real_fcntl
+
+        ifaces = data.get("network_interfaces", {})
+        self.assertTrue(ifaces, "Fallback must return at least one interface")
+        all_addrs = [a for lst in ifaces.values() for a in lst]
+        self.assertTrue(all_addrs, "Fallback must return at least one address")
+
+    @unittest.skipUnless(__import__('platform').system() == "Darwin", "macOS only")
+    def test_macos_ifconfig_method(self):
+        """On macOS, ifconfig -a must populate network_interfaces."""
+        data = self._run_sysinfo()
+        ifaces = data["network_interfaces"]
+        # macOS always has at least lo0
+        self.assertTrue(any("lo" in k or "en" in k for k in ifaces),
+                        "macOS ifaces must include lo0 or en0")
+
+    def test_sysinfo_survives_ifconfig_parse_error(self):
+        """Malformed ifconfig output must not crash sysinfo — fallback must apply.
+
+        Originally Darwin-only, now runs on any platform by mocking platform.system()
+        to return 'Darwin' and intercepting the ifconfig subprocess call.
+        """
+        from agent.main import execute_allowed
+        import json, unittest.mock as m
+
+        orig_run = __import__('subprocess').run
+
+        def bad_ifconfig(cmd, **kw):
+            if isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == "ifconfig":
+                r = m.MagicMock()
+                r.returncode = 0
+                r.stdout = "GARBAGE OUTPUT\n  NOT VALID\n"
+                return r
+            return orig_run(cmd, **kw)
+
+        with m.patch("platform.system", return_value="Darwin"):
+            with m.patch("subprocess.run", side_effect=bad_ifconfig):
+                data = json.loads(execute_allowed("sysinfo", {}))
+
+        self.assertIn("network_interfaces", data)
+        self.assertTrue(data["network_interfaces"])
+
+
+# ── Residual: shellcode Mach-O and PE magic header detection ─────────────────
+
+class TestShellcodeBinaryMismatch(unittest.TestCase):
+    """Verify that wrong-platform binary files are rejected with clear messages."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory(prefix="shellcode-mismatch-")
+        self.lab = __import__('pathlib').Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_binary(self, name: str, header: bytes) -> None:
+        """Write a fake binary with the given magic header to lab dir."""
+        p = self.lab / name
+        p.write_bytes(header + b"\x00" * 60)
+        p.chmod(0o755)
+
+    def test_elf_on_linux_macho_rejected(self):
+        """A Mach-O binary on Linux must be rejected with a clear message."""
+        import platform as _plat
+        if _plat.system() != "Linux":
+            self.skipTest("Linux-specific test")
+        from agent.main import execute_allowed
+        # Mach-O 64-bit little-endian magic
+        self._write_binary("macos_bin", b"\xcf\xfa\xed\xfe")
+        with self.assertRaises(ValueError) as ctx:
+            execute_allowed("shellcode", {"name": "macos_bin"}, lab_dir=str(self.lab))
+        msg = str(ctx.exception)
+        self.assertIn("Mach-O", msg)
+        self.assertIn("macOS", msg)
+        self.assertIn("Linux", msg)
+
+    def test_elf_on_windows_rejected(self):
+        """An ELF binary on Windows must be rejected with a clear message."""
+        import platform as _plat, unittest.mock as m
+        from agent.main import execute_allowed
+        self._write_binary("linux_bin", b"\x7fELF")
+        with m.patch("platform.system", return_value="Windows"):
+            with self.assertRaises(ValueError) as ctx:
+                execute_allowed("shellcode", {"name": "linux_bin"}, lab_dir=str(self.lab))
+        msg = str(ctx.exception)
+        self.assertIn("ELF", msg)
+        self.assertIn("Windows", msg)
+
+    def test_macho_on_windows_rejected(self):
+        """A Mach-O binary on Windows must be rejected with a clear message."""
+        import unittest.mock as m
+        from agent.main import execute_allowed
+        # Mach-O 32-bit little-endian magic
+        self._write_binary("macos_bin", b"\xce\xfa\xed\xfe")
+        with m.patch("platform.system", return_value="Windows"):
+            with self.assertRaises(ValueError) as ctx:
+                execute_allowed("shellcode", {"name": "macos_bin"}, lab_dir=str(self.lab))
+        msg = str(ctx.exception)
+        self.assertIn("Mach-O", msg)
+        self.assertIn("Windows", msg)
+
+    def test_macho_64_big_endian_on_windows_rejected(self):
+        """Mach-O 64-bit big-endian magic must also be detected."""
+        import unittest.mock as m
+        from agent.main import execute_allowed
+        # Mach-O 64-bit big-endian
+        self._write_binary("macos_be_bin", b"\xfe\xed\xfa\xcf")
+        with m.patch("platform.system", return_value="Windows"):
+            with self.assertRaises(ValueError) as ctx:
+                execute_allowed("shellcode", {"name": "macos_be_bin"}, lab_dir=str(self.lab))
+        self.assertIn("Mach-O", str(ctx.exception))
+
+    def test_elf_on_macos_rejected(self):
+        """An ELF binary on macOS must be rejected with a clear message."""
+        import unittest.mock as m
+        from agent.main import execute_allowed
+        self._write_binary("linux_bin", b"\x7fELF")
+        with m.patch("platform.system", return_value="Darwin"):
+            with self.assertRaises(ValueError) as ctx:
+                execute_allowed("shellcode", {"name": "linux_bin"}, lab_dir=str(self.lab))
+        msg = str(ctx.exception)
+        self.assertIn("ELF", msg)
+        self.assertIn("macOS", msg)
+
+    def test_pe_exe_on_linux_runs_without_mismatch_error(self):
+        """A PE (.exe) binary on Linux raises OSError (exec format), not our mismatch error."""
+        import platform as _plat
+        if _plat.system() != "Linux":
+            self.skipTest("Linux-specific test")
+        from agent.main import execute_allowed
+        # MZ header = Windows PE — no explicit rejection on Linux; let the OS error
+        self._write_binary("windows.exe", b"MZ\x90\x00")
+        with self.assertRaises(ValueError) as ctx:
+            execute_allowed("shellcode", {"name": "windows.exe"}, lab_dir=str(self.lab))
+        # Must raise ValueError (wrapping OSError) but NOT our "Mach-O" / "ELF" msg
+        msg = str(ctx.exception)
+        self.assertNotIn("Mach-O", msg)
+        self.assertNotIn("ELF binary", msg)
+        # The actual exec-format error from the OS is acceptable
+        self.assertTrue(
+            "execution failed" in msg or "timed out" in msg or "not executable" in msg
+            or "Exec format" in msg or "cannot execute" in msg,
+            f"Unexpected error message: {msg!r}"
+        )
+
+    def test_matching_platform_binary_runs(self):
+        """A native binary for the current platform must execute without mismatch error."""
+        import platform as _plat
+        if _plat.system() not in ("Linux", "Darwin"):
+            self.skipTest("POSIX only")
+        from agent.main import execute_allowed
+        import json as _json
+        binary = self.lab / "native_test"
+        binary.write_text("#!/bin/sh\necho native_ok\n")
+        binary.chmod(0o755)
+        raw = execute_allowed("shellcode", {"name": "native_test"}, lab_dir=str(self.lab))
+        data = _json.loads(raw)
+        self.assertEqual(data["returncode"], 0)
+        self.assertIn("native_ok", data["output"])
+
+    def test_unreadable_header_does_not_block_execution(self):
+        """If header read fails (PermissionError), execution must still be attempted.
+
+        The agent catches OSError on the header read and proceeds to subprocess.run.
+        This test injects a PermissionError via mock so it runs regardless of whether
+        the process is root (root can always read files, making the real chmod approach
+        unreliable in CI containers).
+        """
+        import platform as _plat, unittest.mock as m
+        if _plat.system() not in ("Linux", "Darwin"):
+            self.skipTest("POSIX only")
+        from agent.main import execute_allowed
+        import json as _json
+
+        binary = self.lab / "no_read_perm"
+        binary.write_text("#!/bin/sh\necho ok\n")
+        binary.chmod(0o755)  # readable so subprocess.run can exec it
+
+        real_open = builtins_open = __import__("builtins").open
+
+        def patched_open(path, mode="r", **kw):
+            # Make the header read raise PermissionError; let subprocess.run open work
+            if "rb" in str(mode) and "no_read_perm" in str(path):
+                raise PermissionError(f"[Errno 13] Permission denied: '{path}'")
+            return real_open(path, mode, **kw)
+
+        with m.patch("builtins.open", side_effect=patched_open):
+            raw = execute_allowed("shellcode", {"name": "no_read_perm"}, lab_dir=str(self.lab))
+
+        data = _json.loads(raw)
+        # Execution proceeded despite the unreadable header
+        self.assertIn("returncode", data)
+
+
+# ── Residual: documentation accuracy verification ─────────────────────────────
+
+class TestDocumentationAccuracy(unittest.TestCase):
+    """Verify that key documentation claims match the actual code."""
+
+    def _read_doc(self, *path_parts) -> str:
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, *path_parts), encoding="utf-8") as _f:
+            return _f.read()
+
+    def test_audit_handoff_says_self_remove_deletes_files(self):
+        """audit-handoff.md must correctly describe self_remove file deletion."""
+        doc = self._read_doc("docs", "audit-handoff.md")
+        self.assertIn("installation deleted", doc,
+                      "audit-handoff must mention that self_remove deletes installed files")
+        self.assertNotIn("limited to graceful stop", doc)
+
+    def test_audit_handoff_says_os_persistence_implemented(self):
+        """audit-handoff.md must list OS persistence as implemented."""
+        doc = self._read_doc("docs", "audit-handoff.md")
+        self.assertIn("persistence.py", doc)
+        self.assertNotIn("OS startup persistence and agent self-removal are **not** implemented", doc)
+
+    def test_audit_handoff_lists_all_three_platforms(self):
+        """audit-handoff.md must mention systemd, launchd, and Task Scheduler."""
+        doc = self._read_doc("docs", "audit-handoff.md")
+        self.assertIn("systemd", doc)
+        self.assertIn("launchd", doc)
+        self.assertIn("Task Scheduler", doc)
+
+    def test_demo_doc_mentions_auto_replay(self):
+        """demo-and-limitations.md must describe automatic replay."""
+        doc = self._read_doc("docs", "demo-and-limitations.md")
+        self.assertIn("automatiquement rejouées", doc)
+        self.assertNotIn(
+            "Les tâches ne sont pas automatiquement rejouées",
+            doc,
+            "Outdated 'not replayed' statement must be removed"
+        )
+
+    def test_durable_recovery_doc_describes_dual_self_remove(self):
+        """durable-recovery doc must explain both installed-copy and source-tree modes."""
+        doc = self._read_doc("docs", "durable-recovery-and-decommission.md")
+        self.assertIn("Installed copy", doc)
+        self.assertIn("Source tree", doc)
+        self.assertIn("pa-agent-lab-", doc)
+
+    def test_requirements_txt_exists_and_mentions_rich(self):
+        """requirements.txt must exist and declare rich."""
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        req_path = os.path.join(root, "requirements.txt")
+        self.assertTrue(os.path.isfile(req_path), "requirements.txt must exist")
+        with open(req_path) as _f:
+            content = _f.read()
+        self.assertIn("rich", content)
+
+    def test_kill_chain_doc_updated_for_persistence(self):
+        """kill-chain doc must not say OS persistence is not implemented."""
+        doc = self._read_doc("docs", "kill-chain-and-countermeasures.md")
+        self.assertNotIn(
+            "Les fonctions de persistance OS et d'auto-suppression ne sont pas implémentées",
+            doc
+        )
+        self.assertIn("persistence.py", doc)
