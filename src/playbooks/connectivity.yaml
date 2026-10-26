@@ -1,0 +1,42 @@
+# Connectivity Reliability Playbook
+# Assesses communication reliability with multiple round-trips.
+# All steps are read-only — safe for any lab agent.
+name: connectivity
+description: "Assess communication reliability: multiple echo and shell round-trips."
+steps:
+  - id: echo_1
+    command: echo
+    parameters:
+      text: "round-trip-1"
+    timeout: 10
+    on_failure: stop
+
+  - id: echo_2
+    command: echo
+    parameters:
+      text: "round-trip-2"
+    depends_on: [echo_1]
+    timeout: 10
+    on_failure: continue
+
+  - id: echo_3
+    command: echo
+    parameters:
+      text: "round-trip-3"
+    depends_on: [echo_1]
+    timeout: 10
+    on_failure: continue
+
+  - id: whoami
+    command: shell
+    parameters:
+      command: whoami
+    depends_on: [echo_1]
+    timeout: 10
+    on_failure: continue
+
+  - id: get_info
+    command: get_info
+    depends_on: [echo_1]
+    timeout: 15
+    on_failure: continue
