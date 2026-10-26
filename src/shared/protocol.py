@@ -1,5 +1,5 @@
 """
-shared/protocol.py — JSON-lines message framing for the lab C2 MVP.
+shared/protocol.py — JSON-lines message framing for the lab C2.
 
 Role in the architecture
 ------------------------
@@ -40,6 +40,9 @@ TASK                server → agent    server dispatches a command for executio
 TASK_ACK            agent  → server   agent confirms it received the task
 TASK_STATUS         agent  → server   agent reports execution progress (RUNNING)
 RESULT              agent  → server   agent delivers the final task output
+RESULT_ACK          server → agent   server confirms result was persisted (v7)
+TASK_STATUS_QUERY   server → agent   server asks agent for a task's current status (v8)
+TASK_STATUS_RESPONSE agent → server  agent replies with known status and running tasks (v8)
 SYNC_STATE          agent  → server   agent reports pending IDs after reconnect
 SYNC_STATE_RESPONSE server → agent    server acknowledges the sync report
 SYNC_COMPLETE       server → agent    server signals the session is ready
@@ -64,6 +67,9 @@ ALLOWED_TYPES = {
     "PING", "PONG",
     "BEACON", "BEACON_ACK",
     "TASK", "TASK_ACK", "TASK_STATUS", "RESULT",
+    "RESULT_ACK",              # server → agent: confirms RESULT was persisted (v7)
+    "TASK_STATUS_QUERY",       # server → agent: request current task status (v8)
+    "TASK_STATUS_RESPONSE",    # agent → server: reply to TASK_STATUS_QUERY (v8)
     "SYNC_STATE", "SYNC_STATE_RESPONSE", "SYNC_COMPLETE",
     "ERROR",
 }
