@@ -1,5 +1,5 @@
 """
-shared/mtls.py — Mutual TLS helpers for the lab C2 MVP.
+shared/mtls.py — Mutual TLS helpers for the lab C2.
 
 Role
 ----
