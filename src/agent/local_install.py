@@ -27,13 +27,14 @@ INSTALLED_FILES = (
     "shared/lab_transfer.py",
     "shared/mtls.py",
     "agent/persistence.py",
+    "agent/local_state.py",
     "shared/platform_compat.py",
 )
 ALLOWED_DIRECTORIES = {"agent", "shared", "agent/__pycache__", "shared/__pycache__"}
 ALLOWED_INSTALL_ROOT = re.compile(r"pa-agent-lab-[A-Za-z0-9_-]{1,48}\Z")
 PY_CACHE_NAME = re.compile(r"(?P<module>[A-Za-z_][A-Za-z0-9_]*)\.cpython-\d+(?:\.opt-\d+)?\.pyc\Z")
 APPROVED_CACHE_MODULES = {
-    "agent/__pycache__": {"__init__", "main", "local_install", "persistence"},
+    "agent/__pycache__": {"__init__", "main", "local_install", "persistence", "local_state"},
     "shared/__pycache__": {"__init__", "protocol", "lab_transfer", "mtls", "platform_compat"},
 }
 
