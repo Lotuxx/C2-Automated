@@ -1,5 +1,5 @@
 """
-server/main.py — Asynchronous TLS C2 server for the lab MVP.
+server/main.py — Asynchronous TLS C2 server for the lab C2.
 
 Role in the architecture
 ------------------------
@@ -79,6 +79,7 @@ except ImportError as _rich_missing:  # pragma: no cover
 
 from server.storage.database import Database, TaskNotFoundError
 from server.task_manager import InvalidTaskTransition
+from server.automation import AutomationManager, Playbook
 from shared.protocol import make_message, read_message, write_message, ProtocolError
 from shared.lab_transfer import read_lab_file, write_lab_file, validate_name
 from shared.mtls import build_server_context, extract_agent_id_from_cert
@@ -229,9 +230,15 @@ class C2Server:
         self.pending_sync: set[str] = set()
         # Correlate explicit liveness checks to the response on the same TLS session.
         self.pending_pings: dict[str, tuple[str, asyncio.StreamWriter, asyncio.Future]] = {}
+        # Correlate TASK_STATUS_QUERY to their awaiting futures.
+        # key: query_id (UUID in payload) → asyncio.Future
+        self._pending_status_queries: dict[str, asyncio.Future] = {}
         self.recovery_lock = asyncio.Lock()  # prevent duplicate retry dispatch in one server
         # Injected by tests to capture CLI output; None means cli() creates its own Console.
         self._test_console = None
+        # Automation engine — initialised lazily after __init__ completes so
+        # it can pass `self` as the server reference.
+        self.automation: AutomationManager | None = None
 
     # ── Task timeout watchdog ─────────────────────────────────────────────────
 
@@ -290,6 +297,45 @@ class C2Server:
 
         wdog = asyncio.create_task(_watchdog(task_id))
         self._active_task_timeouts[task_id] = wdog
+
+    async def query_task_status(self, agent_id: str, task_id: str,
+                                timeout: float = 5.0) -> dict | None:
+        """Ask the connected agent what it knows about a specific task.
+
+        Sends ``TASK_STATUS_QUERY`` and awaits ``TASK_STATUS_RESPONSE``.
+        Useful for resolving uncertain outcomes after a reconnect or restart
+        without blindly replaying the task.
+
+        Returns the response payload dict, or None on timeout / not connected.
+        The response includes:
+          - ``agent_status``: "RUNNING", "COMPLETED" (pending ACK), or "UNKNOWN"
+          - ``running_tasks``: list of task_ids currently executing on the agent
+          - ``pending_results``: list of task_ids with completed work awaiting ACK
+        """
+        async with self.connection_lock:
+            writer = self.connections.get(agent_id)
+        if writer is None:
+            return None
+        # Use a unique correlation ID carried in the payload so the response
+        # handler can match reply → future without touching message_id routing.
+        query_id = str(uuid.uuid4())
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_status_queries[query_id] = future
+        try:
+            await write_message(writer, make_message(
+                "TASK_STATUS_QUERY",
+                agent_id=agent_id,
+                payload={"task_id": task_id, "query_id": query_id},
+            ))
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            LOG.warning("TASK_STATUS_QUERY timed out agent=%s task=%s", agent_id, task_id)
+            return None
+        except Exception as exc:
+            LOG.warning("TASK_STATUS_QUERY failed agent=%s: %s", agent_id, exc)
+            return None
+        finally:
+            self._pending_status_queries.pop(query_id, None)
 
     def _cancel_task_watchdog(self, task_id: str) -> None:
         """Cancel the timeout watchdog for a task that has reached a terminal state.
@@ -432,9 +478,40 @@ class C2Server:
             _rate_window_start: float = asyncio.get_event_loop().time()
             _rate_count: int = 0
 
+            # Per-session message_id deduplication.
+            # Each message carries a unique message_id UUID.  We keep the N most
+            # recently seen IDs and drop any message whose ID we have already
+            # processed in this session.  This prevents:
+            #   • Retransmitted RESULT messages producing duplicate DB rows.
+            #   • Replay attacks where an intercepted message is re-sent.
+            # We use a bounded deque so memory stays O(DEDUP_WINDOW) regardless
+            # of session length.  RESULT already has its own result_id PK guard;
+            # message_id dedup adds a second, earlier layer of protection.
+            from collections import deque as _deque
+            _DEDUP_WINDOW = 256           # keep last 256 message_ids per session
+            _seen_message_ids: _deque = _deque(maxlen=_DEDUP_WINDOW)
+
             while True:
                 msg = await read_message(reader)
                 mtype = msg["type"]
+
+                # ── Duplicate message_id detection ────────────────────────────
+                # REGISTER is always processed (re-registration is rejected by
+                # its own guard, not dedup).  BEACON and PING are high-frequency
+                # liveness signals — deduping them would drop legitimate retries.
+                # All other message types carry content that must not be processed
+                # twice (RESULT, TASK_ACK, TASK_STATUS, SYNC_STATE).
+                _DEDUP_SKIP = {"REGISTER", "BEACON", "PING", "PONG",
+                               "TASK_STATUS_RESPONSE"}
+                _mid = msg.get("message_id")
+                if _mid and mtype not in _DEDUP_SKIP:
+                    if _mid in _seen_message_ids:
+                        LOG.debug(
+                            "duplicate message_id=%s type=%s agent=%s — ignored",
+                            _mid, mtype, agent_id,
+                        )
+                        continue
+                    _seen_message_ids.append(_mid)
 
                 # ── Rate limiting ──────────────────────────────────────────────
                 now_t = asyncio.get_event_loop().time()
@@ -553,6 +630,20 @@ class C2Server:
                     else:
                         LOG.warning("unmatched PONG from agent=%s", agent_id)
 
+                # ── TASK_STATUS_RESPONSE ──────────────────────────────────────
+                elif mtype == "TASK_STATUS_RESPONSE":
+                    # Agent replied to a TASK_STATUS_QUERY.  Resolve the waiting
+                    # future keyed by query_id so query_task_status() can return.
+                    query_id = msg["payload"].get("query_id")
+                    future   = self._pending_status_queries.get(query_id)
+                    if future and not future.done():
+                        future.set_result(msg["payload"])
+                    else:
+                        LOG.debug(
+                            "unmatched TASK_STATUS_RESPONSE query_id=%s agent=%s",
+                            query_id, agent_id,
+                        )
+
                 # ── BEACON ────────────────────────────────────────────────────
                 elif mtype == "BEACON":
                     # Periodic heartbeat from the agent.  Refresh last_seen so
@@ -654,12 +745,38 @@ class C2Server:
                         # so it does not also mark this task TIMEOUT after the fact.
                         self._cancel_task_watchdog(task_id)
                         LOG.info("result received task=%s status=%s", task_id, result_status)
+                        # RESULT_ACK: inform the agent that the result was persisted.
+                        # The agent uses this to clear the result from its pending store
+                        # and avoid retransmission on the next SYNC_STATE.
+                        await write_message(writer, make_message(
+                            "RESULT_ACK",
+                            agent_id=agent_id,
+                            session_id=session_id,
+                            payload={
+                                "task_id":    task_id,
+                                "result_id":  result_id,
+                                "accepted":   True,
+                            },
+                        ))
                     except (TaskNotFoundError, InvalidTaskTransition) as exc:
                         LOG.warning("RESULT rejected task_id=%s status=%s agent=%s: %s",
                                     task_id, result_status, agent_id, exc)
                         # Avoid retaining a file for a rejected/duplicate result.
                         if downloaded is not None:
                             (self.download_dir / downloaded["name"]).unlink(missing_ok=True)
+                        # RESULT_REJECTED: tell the agent not to retransmit this result.
+                        # The agent will remove it from its pending store on receipt.
+                        await write_message(writer, make_message(
+                            "RESULT_ACK",
+                            agent_id=agent_id,
+                            session_id=session_id,
+                            payload={
+                                "task_id":   task_id,
+                                "result_id": result_id,
+                                "accepted":  False,
+                                "reason":    str(exc),
+                            },
+                        ))
 
                 # ── SYNC_STATE ────────────────────────────────────────────────
                 elif mtype == "SYNC_STATE":
@@ -744,6 +861,23 @@ class C2Server:
                                 "auto-replay: could not replay task_id=%s: %s",
                                 orig_id, exc,
                             )
+
+                    # ── Automation triggers (C3) ───────────────────────────────
+                    # Fire any registered playbook triggers for the agent_connected
+                    # event.  This runs after auto-replay so the agent is fully
+                    # synchronised and ready before any automated playbook starts.
+                    if self.automation is not None:
+                        try:
+                            triggered = await self.automation.fire_trigger(
+                                "agent_connected", agent_id
+                            )
+                            if triggered:
+                                LOG.info(
+                                    "triggers fired for agent=%s: %d playbook(s) started",
+                                    agent_id[:8], len(triggered),
+                                )
+                        except Exception as exc:
+                            LOG.warning("trigger execution error agent=%s: %s", agent_id, exc)
 
                 # ── Unknown message type ───────────────────────────────────────
                 else:
@@ -834,10 +968,21 @@ class C2Server:
             LOG.info("connection closed session=%s", session_id)
 
     async def ping_agent(self, agent_id: str, *, timeout: float = 3.0) -> bool:
-        """Confirm round-trip liveness on the active TLS session."""
+        """Confirm round-trip liveness on the active TLS session.
+
+        Sends PING and waits for PONG up to ``timeout`` seconds.
+        Returns True on PONG, False if the agent disconnected during the wait.
+        Raises RuntimeError if there is no ready connection.
+
+        Pending ping entries are always cleaned up in the finally block so they
+        cannot accumulate even if the caller does not await the result.
+        """
         writer = self.connections.get(agent_id)
         if writer is None or writer.is_closing() or agent_id in self.pending_sync:
             raise RuntimeError("Agent does not have a ready connection")
+        # Sweep stale entries before adding a new one — O(n) but n is tiny
+        # (at most one per concurrent ping, typically 1-2 at a time).
+        self._sweep_stale_pings()
         message = make_message("PING", agent_id=agent_id)
         message_id = message["message_id"]
         future = asyncio.get_running_loop().create_future()
@@ -845,8 +990,27 @@ class C2Server:
         try:
             await write_message(writer, message)
             return bool(await asyncio.wait_for(future, timeout))
+        except asyncio.TimeoutError:
+            return False
         finally:
             self.pending_pings.pop(message_id, None)
+
+    def _sweep_stale_pings(self) -> None:
+        """Remove done/cancelled futures from pending_pings to prevent leaks.
+
+        Called before each new ping.  A future is stale when its agent is no
+        longer connected or the future is already resolved (done/cancelled).
+        """
+        stale = [
+            mid for mid, (aid, w, fut) in list(self.pending_pings.items())
+            if fut.done() or w.is_closing() or aid not in self.connections
+        ]
+        for mid in stale:
+            entry = self.pending_pings.pop(mid, None)
+            if entry:
+                fut = entry[2]
+                if not fut.done():
+                    fut.cancel()
 
     # ── Task dispatch ─────────────────────────────────────────────────────────
 
@@ -1048,7 +1212,7 @@ class C2Server:
         # ── Banner ────────────────────────────────────────────────────────────
         banner = Panel(
             Text.from_markup(
-                "[bold red]C2-MVP[/bold red]  [dim]─[/dim]  "
+                "[bold red]PA-C2[/bold red]  [dim]─[/dim]  "
                 "[bold]Authorized lab use only[/bold]\n"
                 "[dim]Type [bold white]help[/bold white] to list commands  "
                 "│  [bold white]quit[/bold white] to exit cleanly[/dim]"
@@ -1313,6 +1477,34 @@ class C2Server:
             t.add_row("task <agent> self_remove",
                       "Gracefully stop agent and remove its installed files",
                       "task ab self_remove")
+            t.add_row("─── Automation ───",  "", "")
+            t.add_row("playbooks",
+                      "List all available playbooks",
+                      "playbooks")
+            t.add_row("playbook show <name>",
+                      "Inspect a playbook's steps and configuration",
+                      "playbook show agent_inventory")
+            t.add_row("playbook validate <name>",
+                      "Validate a playbook before execution",
+                      "playbook validate file_integrity")
+            t.add_row("playbook run <name> <agent>",
+                      "Execute a playbook against a connected agent",
+                      "playbook run agent_inventory ab")
+            t.add_row("playbook cancel <run_prefix>",
+                      "Cancel a running playbook execution",
+                      "playbook cancel a1b2c3d4")
+            t.add_row("triggers",
+                      "List all automation triggers",
+                      "triggers")
+            t.add_row("trigger add <event> <playbook> [--repeat]",
+                      "Register a trigger: auto-run a playbook on an event (agent_connected)",
+                      "trigger add agent_connected agent_inventory")
+            t.add_row("runs",
+                      "List recent playbook execution history",
+                      "runs")
+            t.add_row("run <run_prefix>",
+                      "Inspect a specific playbook run with step-by-step results",
+                      "run a1b2c3d4")
             t.add_row("─── Management ───",  "", "")
             t.add_row("ping <agent>",
                       "Send PING and measure round-trip latency",
@@ -1503,6 +1695,245 @@ class C2Server:
                 except Exception as exc:
                     con.print(f"[red]Dispatch failed:[/red] {exc}")
 
+            # ── playbooks ─────────────────────────────────────────────────────
+            elif cmd == "playbooks":
+                if self.automation is None:
+                    con.print("[yellow]Automation engine not initialised.[/yellow]")
+                else:
+                    pbs = self.automation.list_playbooks()
+                    if not pbs:
+                        con.print("[yellow]No playbooks registered.[/yellow]")
+                    else:
+                        from rich.table import Table as _Table
+                        from rich import box as _rbox
+                        t = _Table(title="Available Playbooks", box=_rbox.ROUNDED,
+                                   border_style="blue", show_lines=True)
+                        t.add_column("Name",        style="bold cyan",  no_wrap=True)
+                        t.add_column("Steps",       style="white",      no_wrap=True)
+                        t.add_column("Description", style="dim")
+                        for pb in pbs:
+                            t.add_row(pb["name"], str(pb["steps"]), pb["description"])
+                        con.print(t)
+
+            elif cmd == "playbook" and len(parts) >= 2:
+                sub = parts[1].lower()
+                if self.automation is None:
+                    con.print("[yellow]Automation engine not initialised.[/yellow]")
+                elif sub == "show" and len(parts) == 3:
+                    pb = self.automation.get_playbook(parts[2])
+                    if pb is None:
+                        con.print(f"[red]Unknown playbook:[/red] {parts[2]!r}")
+                    else:
+                        from rich.table import Table as _Table
+                        from rich import box as _rbox
+                        t = _Table(title=f"Playbook: {pb.name}", box=_rbox.ROUNDED,
+                                   border_style="blue", show_lines=True)
+                        t.add_column("Step ID",    style="bold cyan",  no_wrap=True)
+                        t.add_column("Command",    style="bold",       no_wrap=True)
+                        t.add_column("Depends on", style="dim",        no_wrap=True)
+                        t.add_column("Timeout",    style="dim",        no_wrap=True)
+                        t.add_column("On failure", style="dim",        no_wrap=True)
+                        for step in pb.steps:
+                            t.add_row(
+                                step.step_id, step.command,
+                                ", ".join(step.depends_on) or "—",
+                                f"{step.timeout}s", step.on_failure,
+                            )
+                        con.print(t)
+                        con.print(f"[dim]{pb.description}[/dim]")
+                elif sub == "validate" and len(parts) == 3:
+                    pb = self.automation.get_playbook(parts[2])
+                    if pb is None:
+                        con.print(f"[red]Unknown playbook:[/red] {parts[2]!r}")
+                    else:
+                        errors = self.automation.validate_playbook(pb)
+                        if errors:
+                            con.print(f"[red]Validation failed ({len(errors)} error(s)):[/red]")
+                            for e in errors:
+                                con.print(f"  [red]•[/red] {e}")
+                        else:
+                            con.print(f"[green]✓[/green] Playbook [bold]{pb.name}[/bold] is valid")
+                elif sub == "run" and len(parts) == 4:
+                    pb_name  = parts[2]
+                    typed_id = parts[3]
+                    async with self.connection_lock:
+                        matches = [aid for aid in self.connections if aid.startswith(typed_id)]
+                    if len(matches) != 1:
+                        con.print(f"[red]No unique connected agent matches {typed_id!r}[/red]")
+                    else:
+                        try:
+                            run_id = await self.automation.run_playbook(pb_name, matches[0])
+                            con.print(
+                                f"[green]✓[/green] Playbook [bold]{pb_name}[/bold] started "
+                                f"on agent [cyan]{matches[0][:8]}[/cyan]  "
+                                f"run=[cyan]{run_id[:8]}[/cyan]  "
+                                f"[dim](track with: runs  or  run {run_id[:8]})[/dim]"
+                            )
+                        except (ValueError, RuntimeError) as exc:
+                            con.print(f"[red]Playbook start failed:[/red] {exc}")
+                elif sub == "cancel" and len(parts) == 3:
+                    prefix = parts[2]
+                    run_ids = [rid for rid in self.automation._runs if rid.startswith(prefix)]
+                    if len(run_ids) != 1:
+                        con.print(f"[red]No unique run matches prefix {prefix!r}[/red]")
+                    else:
+                        cancelled = await self.automation.cancel_run(run_ids[0])
+                        if cancelled:
+                            con.print(f"[green]✓[/green] Run [cyan]{run_ids[0][:8]}[/cyan] cancelled")
+                        else:
+                            con.print(f"[yellow]Run {run_ids[0][:8]} is not active[/yellow]")
+                else:
+                    con.print(
+                        "[yellow]Usage:[/yellow] "
+                        "playbook [bold]show[/bold] <name>  │  "
+                        "playbook [bold]validate[/bold] <name>  │  "
+                        "playbook [bold]run[/bold] <name> <agent>  │  "
+                        "playbook [bold]cancel[/bold] <run_prefix>"
+                    )
+
+            # ── triggers — list and manage automation triggers ─────────────────
+            elif cmd == "triggers":
+                if self.automation is None:
+                    con.print("[yellow]Automation engine not initialised.[/yellow]")
+                else:
+                    triggers = self.automation.list_triggers()
+                    if not triggers:
+                        con.print(
+                            "[yellow]No triggers registered.[/yellow]\n"
+                            "[dim]Add one: trigger add <event> <playbook> "
+                            "[dim](events: agent_connected)[/dim]"
+                        )
+                    else:
+                        from rich.table import Table as _Table
+                        from rich import box as _rbox
+                        t = _Table(title="Automation Triggers", box=_rbox.ROUNDED,
+                                   border_style="blue", show_lines=True)
+                        t.add_column("Event",    style="bold cyan",  no_wrap=True)
+                        t.add_column("Playbook", style="bold",       no_wrap=True)
+                        t.add_column("Once/agent",style="dim",       no_wrap=True)
+                        t.add_column("Fired",    style="dim",        no_wrap=True)
+                        for tr in triggers:
+                            t.add_row(
+                                tr["event"], tr["playbook_name"],
+                                "yes" if tr["once_per_agent"] else "no",
+                                str(tr["fired_count"]),
+                            )
+                        con.print(t)
+
+            elif cmd == "trigger" and len(parts) >= 2:
+                sub = parts[1].lower()
+                if self.automation is None:
+                    con.print("[yellow]Automation engine not initialised.[/yellow]")
+                elif sub == "add" and len(parts) >= 4:
+                    event_name   = parts[2]
+                    playbook_name = parts[3]
+                    once = True
+                    if len(parts) >= 5 and parts[4].lower() == "--repeat":
+                        once = False
+                    try:
+                        self.automation.register_trigger(
+                            event_name, playbook_name, once_per_agent=once
+                        )
+                        con.print(
+                            f"[green]✓[/green] Trigger registered: "
+                            f"[bold]{event_name}[/bold] → "
+                            f"[cyan]{playbook_name}[/cyan]  "
+                            f"[dim](once_per_agent={once})[/dim]"
+                        )
+                    except ValueError as exc:
+                        con.print(f"[red]Trigger error:[/red] {exc}")
+                else:
+                    con.print(
+                        "[yellow]Usage:[/yellow] "
+                        "trigger [bold]add[/bold] <event> <playbook> [--repeat]\n"
+                        "  Events: [cyan]agent_connected[/cyan]\n"
+                        "  Example: trigger add agent_connected connectivity"
+                    )
+
+            # ── runs — list playbook execution history ─────────────────────────
+            elif cmd == "runs":
+                if self.automation is None:
+                    con.print("[yellow]Automation engine not initialised.[/yellow]")
+                else:
+                    runs = self.automation.list_runs()
+                    if not runs:
+                        con.print("[yellow]No playbook runs recorded yet.[/yellow]")
+                    else:
+                        from rich.table import Table as _Table
+                        from rich import box as _rbox
+                        t = _Table(title="Playbook Runs", box=_rbox.ROUNDED,
+                                   border_style="blue", show_lines=True)
+                        t.add_column("Run ID",   style="bold cyan",  no_wrap=True)
+                        t.add_column("Playbook", style="bold",       no_wrap=True)
+                        t.add_column("Agent",    style="white",      no_wrap=True)
+                        t.add_column("Status",   no_wrap=True)
+                        t.add_column("Duration", style="dim",        no_wrap=True)
+                        t.add_column("Steps",    style="dim",        no_wrap=True)
+                        for r in runs:
+                            steps_done = sum(
+                                1 for s in r["steps"].values()
+                                if s["status"] in ("COMPLETED", "FAILED", "SKIPPED", "CANCELLED")
+                            )
+                            dur = f"{r['duration_s']:.1f}s" if r["duration_s"] else "…"
+                            t.add_row(
+                                r["run_id"][:8],
+                                r["playbook_name"],
+                                r["agent_id"][:8],
+                                coloured_status(r["status"]),
+                                dur,
+                                f"{steps_done}/{len(r['steps'])}",
+                            )
+                        con.print(t)
+
+            # ── run <prefix> — inspect a specific run ──────────────────────────
+            elif cmd == "run" and len(parts) == 2:
+                if self.automation is None:
+                    con.print("[yellow]Automation engine not initialised.[/yellow]")
+                else:
+                    prefix = parts[1]
+                    run_ids = [rid for rid in self.automation._runs if rid.startswith(prefix)]
+                    if len(run_ids) != 1:
+                        con.print(f"[red]No unique run matches prefix {prefix!r}[/red]")
+                    else:
+                        from rich.panel import Panel as _Panel
+                        from rich.table import Table as _Table
+                        from rich import box as _rbox
+                        r = self.automation._runs[run_ids[0]].to_dict()
+                        meta = _Table.grid(padding=(0, 2))
+                        meta.add_column(style="bold dim", no_wrap=True)
+                        meta.add_column(style="white")
+                        meta.add_row("run_id",   r["run_id"])
+                        meta.add_row("playbook", r["playbook_name"])
+                        meta.add_row("agent",    r["agent_id"][:8])
+                        meta.add_row("status",   coloured_status(r["status"]))
+                        if r["duration_s"]:
+                            meta.add_row("duration", f"{r['duration_s']:.1f}s")
+                        if r.get("error"):
+                            meta.add_row("error", f"[red]{r['error']}[/red]")
+                        con.print(_Panel(meta, title="[bold]Playbook Run[/bold]",
+                                         border_style="blue", box=_rbox.ROUNDED))
+                        # Step detail
+                        t = _Table(title="Steps", box=_rbox.ROUNDED,
+                                   border_style="blue", show_lines=True)
+                        t.add_column("Step",    style="bold cyan",  no_wrap=True)
+                        t.add_column("Command", style="bold",       no_wrap=True)
+                        t.add_column("Status",  no_wrap=True)
+                        t.add_column("Task ID", style="dim",        no_wrap=True)
+                        t.add_column("Duration",style="dim",        no_wrap=True)
+                        t.add_column("Output / Error", style="dim", max_width=40)
+                        for step in r["steps"].values():
+                            dur = f"{step['duration_s']:.1f}s" if step["duration_s"] else "—"
+                            out = (step.get("output") or step.get("error") or "")[:80]
+                            t.add_row(
+                                step["step_id"],
+                                step["command"],
+                                coloured_status(step["status"]),
+                                (step["task_id"] or "—")[:8],
+                                dur,
+                                out,
+                            )
+                        con.print(t)
+
             # ── quit / exit ───────────────────────────────────────────────────
             elif cmd in {"quit", "exit"}:
                 con.print("[bold yellow]Shutting down — closing all agent connections…[/bold yellow]")
@@ -1594,11 +2025,28 @@ async def run(args) -> None:
     task_timeout = float(getattr(args, "task_timeout", DEFAULT_TASK_TIMEOUT))
     app = C2Server(db, upload_dir=upload_dir, download_dir=download_dir,
                    task_timeout=task_timeout, mtls_enabled=agent_ca is not None)
+    # Wire up the automation engine after C2Server is created so it can
+    # reference the live server and database.
+    playbooks_dir = Path(getattr(args, "playbooks_dir", "playbooks"))
+    playbooks_dir.mkdir(parents=True, exist_ok=True)   # create if absent
+    app.automation = AutomationManager(
+        server=app, db=db,
+        playbooks_dir=playbooks_dir,
+    )
+    LOG.info("automation engine ready: %d playbooks available",
+             len(app.automation.list_playbooks()))
 
     # _tracked_handle_client wraps handle_client to register tasks in
     # app._handler_tasks, enabling clean shutdown via app.shutdown().
+    # The default asyncio StreamReader limit is 64 KiB, which is smaller than
+    # the Base64-encoded form of a 128 KiB file (~175 KiB) plus JSON framing.
+    # We set an explicit limit of 4 MiB — well above MAX_MESSAGE_BYTES (1 MiB)
+    # in shared/protocol.py — so readline() never truncates a valid message.
+    # The protocol layer still enforces its own 1 MiB cap.
+    STREAM_READER_LIMIT = 4 * 1024 * 1024  # 4 MiB
     server = await asyncio.start_server(
-        app._tracked_handle_client, args.host, args.port, ssl=context
+        app._tracked_handle_client, args.host, args.port, ssl=context,
+        limit=STREAM_READER_LIMIT,
     )
     LOG.info("listening on %s:%s (TLS)", args.host, args.port)
 
@@ -1622,7 +2070,7 @@ def main() -> None:
     Parses command-line arguments and delegates to the async ``run()``
     coroutine via ``asyncio.run()``.
     """
-    parser = argparse.ArgumentParser(description="Lab-only C2 server MVP")
+    parser = argparse.ArgumentParser(description="Lab C2 server")
     parser.add_argument("--host", default="127.0.0.1",
                         help="Listening address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=9443,
@@ -1645,6 +2093,13 @@ def main() -> None:
                         help="Server-side approved files to send to agents")
     parser.add_argument("--download-dir", default="data/server_downloads",
                         help="Server-side destination for retrieved lab files")
+    parser.add_argument(
+        "--playbooks-dir", default="playbooks", metavar="DIR",
+        help=(
+            "Directory to scan for .yaml / .json playbook files at startup "
+            "(default: playbooks/). Created automatically if absent."
+        ),
+    )
     parser.add_argument(
         "--agent-ca", default=None, metavar="PATH",
         help=(
