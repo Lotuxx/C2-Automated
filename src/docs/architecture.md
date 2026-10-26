@@ -1,4 +1,4 @@
-# Architecture — PA-C2 v10
+# Architecture — PA-C2
 
 ## 1. Vue d'ensemble
 
