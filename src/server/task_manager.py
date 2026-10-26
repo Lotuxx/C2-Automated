@@ -1,5 +1,5 @@
 """
-server/task_manager.py — Authoritative task state machine for the lab C2 MVP.
+server/task_manager.py — Authoritative task state machine for the lab C2.
 
 Role in the architecture
 ------------------------
@@ -48,8 +48,8 @@ Task lifecycle overview
 
 TIMEOUT and CANCELLED are reachable from every non-terminal state; they
 represent server-initiated outcomes (timeout watchdog or operator cancel).
-They are defined in the state machine but the timeout watchdog is not yet
-implemented in this MVP — the transitions are reserved for future use.
+They are defined in the state machine but the timeout watchdog, RESULT_ACK, TASK_STATUS_QUERY, and automation engine
+are all fully implemented in PA-C2 v9.
 """
 
 from enum import Enum
