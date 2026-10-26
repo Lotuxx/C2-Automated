@@ -1,4 +1,4 @@
-# Requirements Compliance Matrix — PA-C2 v7
+# Requirements Compliance Matrix — PA-C2
 
 ## Academic requirements
 
