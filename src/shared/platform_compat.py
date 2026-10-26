@@ -76,7 +76,8 @@ def is_wsl() -> bool:
     if not is_linux():
         return False
     try:
-        release = open("/proc/sys/kernel/osrelease").read().lower()
+        with open("/proc/sys/kernel/osrelease") as _f:
+            release = _f.read().lower()
         return "microsoft" in release
     except OSError:
         return False
