@@ -1,5 +1,5 @@
 """
-agent/main.py — Harmless lab agent for the C2 MVP.
+agent/main.py — Harmless lab agent for the C2 server.
 
 Role in the architecture
 ------------------------
@@ -81,6 +81,7 @@ from shared.protocol import make_message, read_message, write_message
 from shared.lab_transfer import read_lab_file, write_lab_file
 from shared.mtls import build_agent_context
 from shared.platform_compat import SHELL_COMMANDS, platform_summary
+from agent.local_state import AgentLocalState
 
 # Module-level logger; basicConfig is called at the top of run().
 LOG = logging.getLogger("agent")
@@ -194,7 +195,8 @@ def execute_allowed(command: str, parameters: dict, *, lab_dir: str = "data/agen
         info["cpu_count_logical"] = os.cpu_count() or 0
         # Physical core count via /proc/cpuinfo on Linux; graceful fallback.
         try:
-            cpuinfo = open("/proc/cpuinfo").read()
+            with open("/proc/cpuinfo") as _f:
+                cpuinfo = _f.read()
             physical = len({line.split(":")[1].strip()
                             for line in cpuinfo.splitlines()
                             if "physical id" in line}) or 1
@@ -211,7 +213,8 @@ def execute_allowed(command: str, parameters: dict, *, lab_dir: str = "data/agen
         # ── Memory (Linux /proc/meminfo; fallback Windows ctypes) ─────────────
         try:
             meminfo = {}
-            for line in open("/proc/meminfo"):
+            with open("/proc/meminfo") as _mf:
+              for line in _mf:
                 parts = line.split()
                 if len(parts) >= 2:
                     meminfo[parts[0].rstrip(":")] = int(parts[1])
@@ -247,40 +250,61 @@ def execute_allowed(command: str, parameters: dict, *, lab_dir: str = "data/agen
             pass  # Windows statvfs not available — skip
 
         # ── Network interfaces ────────────────────────────────────────────────
-        # Strategy: try multiple methods in order from most informative to safest.
-        # 1. /proc/net/if_inet6 + ip command (Linux, no fcntl needed)
-        # 2. SIOCGIFCONF ioctl (Linux/macOS only — fcntl unavailable on Windows)
-        # 3. socket.gethostbyname fallback (all platforms)
+        # Four methods tried in order; first success wins.
+        #
+        # 1. `ip -json addr`      Linux / WSL2 — richest output, no ioctl
+        # 2. `ifconfig -a`        macOS / BSD  — parsed for inet/inet6 lines
+        # 3. SIOCGIFCONF ioctl    Linux/macOS  — fallback when CLI tools absent
+        # 4. socket.gethostbyname all platforms — last resort
         ifaces: dict[str, list[str]] = {}
-        try:
-            # Method 1: parse /proc/net/fib_trie (Linux, pure file read, no ioctl)
-            # More portable than fcntl.ioctl — works inside containers too.
-            if platform.system() == "Linux":
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    import struct as _struct
-                    for iface_line in open("/proc/net/if_inet6", errors="replace"):
-                        pass  # file exists check only
-                # Use ip -json addr if available (covers Linux and WSL2)
-                r = subprocess.run(
+        _sys = platform.system()
+
+        # Method 1: `ip -json addr` (Linux, WSL2, most containers)
+        if not ifaces and _sys == "Linux":
+            try:
+                _r = subprocess.run(
                     ["ip", "-json", "addr"], capture_output=True, text=True,
                     timeout=3, check=False, shell=False,
                 )
-                if r.returncode == 0:
+                if _r.returncode == 0:
                     import json as _jn
-                    for entry in _jn.loads(r.stdout):
-                        name = entry.get("ifname", "?")
-                        addrs = [
-                            a["local"]
-                            for a in entry.get("addr_info", [])
-                            if a.get("family") in ("inet", "inet6")
+                    for _entry in _jn.loads(_r.stdout):
+                        _name = _entry.get("ifname", "?")
+                        _addrs = [
+                            _a["local"]
+                            for _a in _entry.get("addr_info", [])
+                            if _a.get("family") in ("inet", "inet6")
                         ]
-                        if addrs:
-                            ifaces[name] = addrs
-            if not ifaces:
-                raise OSError("ip command not available or not Linux")
-        except Exception:
+                        if _addrs:
+                            ifaces[_name] = _addrs
+            except Exception:
+                pass
+
+        # Method 2: `ifconfig -a` (macOS / BSD — `ip` does not exist there)
+        if not ifaces and _sys == "Darwin":
             try:
-                # Method 2: SIOCGIFCONF ioctl (Linux/macOS only)
+                _r = subprocess.run(
+                    ["ifconfig", "-a"], capture_output=True, text=True,
+                    timeout=3, check=False, shell=False,
+                )
+                if _r.returncode == 0:
+                    _cur_iface = None
+                    for _line in _r.stdout.splitlines():
+                        # Interface header: "en0: flags=..."
+                        if _line and not _line[0].isspace():
+                            _cur_iface = _line.split(":")[0]
+                        elif _cur_iface:
+                            _parts = _line.split()
+                            # "inet 192.168.1.2 netmask ..." or "inet6 fe80::..."
+                            if len(_parts) >= 2 and _parts[0] in ("inet", "inet6"):
+                                _addr = _parts[1].split("%")[0]  # strip scope-id
+                                ifaces.setdefault(_cur_iface, []).append(_addr)
+            except Exception:
+                pass
+
+        # Method 3: SIOCGIFCONF ioctl (Linux/macOS — requires fcntl, no Windows)
+        if not ifaces:
+            try:
                 import fcntl as _fcntl, struct as _struct
                 import array as _array
                 _buf = _array.array("B", b"\0" * 1024)
@@ -290,18 +314,24 @@ def execute_allowed(command: str, parameters: dict, *, lab_dir: str = "data/agen
                     _fcntl.ioctl(_s.fileno(), 0x8912, _ifc)  # SIOCGIFCONF
                     _total = _struct.unpack("i", _ifc[:4])[0]
                 for _i in range(0, _total, 40):
-                    _nm = _buf[_i:_i+16].tobytes().rstrip(b"\x00").decode("utf-8","replace").split("\x00")[0]
+                    _nm = (
+                        _buf[_i:_i+16].tobytes()
+                        .rstrip(b"\x00").decode("utf-8", "replace")
+                        .split("\x00")[0]
+                    )
                     _addr = socket.inet_ntoa(_buf[_i+20:_i+24].tobytes())
                     if _nm:
                         ifaces.setdefault(_nm, []).append(_addr)
             except Exception:
                 pass
+
+        # Method 4: hostname resolution — universal last resort (Windows included)
         if not ifaces:
-            # Method 3: hostname resolution — works everywhere including Windows
             try:
                 ifaces["primary"] = [socket.gethostbyname(socket.gethostname())]
             except Exception:
                 ifaces["primary"] = ["unknown"]
+
         info["network_interfaces"] = ifaces
 
         # ── Environment (safe subset) ─────────────────────────────────────────
@@ -311,7 +341,8 @@ def execute_allowed(command: str, parameters: dict, *, lab_dir: str = "data/agen
 
         # ── Uptime ────────────────────────────────────────────────────────────
         try:
-            uptime_s = float(open("/proc/uptime").read().split()[0])
+            with open("/proc/uptime") as _uf:
+                uptime_s = float(_uf.read().split()[0])
             h, m = divmod(int(uptime_s), 3600)
             info["uptime"] = f"{h}h {m // 60}m"
         except OSError:
@@ -359,20 +390,48 @@ def execute_allowed(command: str, parameters: dict, *, lab_dir: str = "data/agen
                 f"{name!r} is not executable — run 'chmod +x {binary_path}' on the agent side"
             )
 
-        # Detect ELF binaries on Windows before execution attempt so the
-        # error message is helpful rather than a cryptic OSError 193.
-        if platform.system() == "Windows":
-            header = b""
-            try:
-                with open(binary_path, "rb") as _fh:
-                    header = _fh.read(4)
-            except OSError:
-                pass
-            if header == b"\x7fELF":
-                raise ValueError(
-                    f"{binary_path.name!r} is a Linux ELF binary and cannot run on Windows. "
-                    "Upload a .exe or .bat compiled for Windows instead."
-                )
+        # Read the binary magic header to detect platform mismatches BEFORE
+        # attempting execution.  This produces a clear diagnostic instead of
+        # cryptic OS errors (Windows: OSError 193; Linux: Exec format error).
+        #
+        # Magic bytes reference:
+        #   \x7fELF         Linux/POSIX ELF binary
+        #   \xfe\xed\xfa\xce  macOS Mach-O 32-bit (little-endian)
+        #   \xfe\xed\xfa\xcf  macOS Mach-O 64-bit (little-endian)
+        #   MZ (0x4D5A)    Windows PE/COFF executable
+        _header = b""
+        try:
+            with open(binary_path, "rb") as _fh:
+                _header = _fh.read(4)
+        except OSError:
+            pass  # unreadable — let subprocess.run report the error naturally
+
+        _sys = platform.system()
+        _is_elf   = _header[:4] == b"\x7fELF"
+        _is_macho = _header[:4] in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
+                                    b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe")
+        _is_pe    = _header[:2] == b"MZ"
+
+        if _sys == "Windows" and _is_elf:
+            raise ValueError(
+                f"{binary_path.name!r} is a Linux ELF binary and cannot run on Windows. "
+                "Upload a .exe or .bat compiled for Windows instead."
+            )
+        if _sys == "Windows" and _is_macho:
+            raise ValueError(
+                f"{binary_path.name!r} is a macOS Mach-O binary and cannot run on Windows. "
+                "Upload a .exe or .bat compiled for Windows instead."
+            )
+        if _sys == "Linux" and _is_macho:
+            raise ValueError(
+                f"{binary_path.name!r} is a macOS Mach-O binary and cannot run on Linux. "
+                "Upload an ELF binary compiled for Linux instead."
+            )
+        if _sys == "Darwin" and _is_elf:
+            raise ValueError(
+                f"{binary_path.name!r} is a Linux ELF binary and cannot run on macOS. "
+                "Upload a Mach-O binary compiled for macOS instead."
+            )
 
         try:
             completed = subprocess.run(
@@ -567,9 +626,12 @@ async def _connection_lifecycle(args, context, agent_id,
         max_attempts = 10 if session_number == 0 else reconnect_attempts
         for attempt in range(1, max_attempts + 1):
             try:
+                # Must match the server's limit so readline() can handle
+                # messages containing Base64-encoded 128 KiB files (~175 KiB).
                 reader, writer = await asyncio.open_connection(
                     args.server, args.port, ssl=context,
                     server_hostname=args.server,
+                    limit=4 * 1024 * 1024,  # 4 MiB — matches server limit
                 )
                 LOG.info("connected to %s:%s (attempt %d, connection %d)",
                          args.server, args.port, attempt, session_number + 1)
@@ -601,6 +663,20 @@ async def _connection_lifecycle(args, context, agent_id,
 
 async def _run_session(args, reader, writer, agent_id: str) -> bool:
     """Register, synchronize and run one TLS session; return True on decommission."""
+    # ── Phase 1b: open durable local state store ──────────────────────────────
+    # AgentLocalState persists pending_results across agent crashes so that
+    # task_ids are accurately reported in SYNC_STATE on the next reconnect.
+    _lab_dir_root = getattr(args, "lab_dir", "data/agent_files")
+    local_state = AgentLocalState(_lab_dir_root)
+    await local_state.open()
+    # Restore pending results from the previous session (if agent crashed)
+    _restored = await local_state.list_pending_results()
+    if _restored:
+        LOG.info(
+            "restored %d pending result(s) from local state",
+            len(_restored),
+        )
+
     # ── Phase 2: registration ─────────────────────────────────────────────────
     # Use the provided agent-id (for deterministic test runs) or generate a
     # fresh UUID.  The UUID is not persisted; a new one is generated on each
@@ -631,13 +707,104 @@ async def _run_session(args, reader, writer, agent_id: str) -> bool:
         while True:
             delay = args.beacon_interval + random.uniform(-args.beacon_jitter, args.beacon_jitter)
             await asyncio.sleep(delay)
+            # Report the real activity state, not a hardcoded IDLE.
+            # 'activity' is the dict defined in the enclosing _run_session scope.
+            current_state = activity["state"]
+            current_task  = activity.get("task_id")
+            beacon_payload: dict = {"activity_state": current_state}
+            if current_task:
+                beacon_payload["running_task_id"] = current_task
             await write_message(writer, make_message(
                 "BEACON", agent_id=agent_id, session_id=session_id,
-                payload={"activity_state": "IDLE"},
+                payload=beacon_payload,
             ))
-            LOG.info("periodic BEACON sent session=%s", session_id)
+            LOG.info("periodic BEACON sent session=%s state=%s", session_id, current_state)
 
     # ── Phase 3: message loop ─────────────────────────────────────────────────
+    # Shared mutable state: heartbeat_loop reads this to report the real state.
+    # States (aligned with the architectural spec):
+    #   "SYNCHRONIZING" — REGISTER_ACK received, waiting for SYNC_COMPLETE
+    #   "ONLINE"        — SYNC_COMPLETE received, ready for tasks (transitional)
+    #   "IDLE"          — active session, no task running
+    #   "BUSY"          — actively executing a task (task_id recorded)
+    #   "DEGRADED"      — queue full or repeated message errors (still connected)
+    # (CONNECTING and DISCONNECTED are handled in _connection_lifecycle)
+    activity: dict = {"state": "SYNCHRONIZING", "task_id": None}
+
+    # Agent-side task tracking for accurate SYNC_STATE.
+    # task_id → "RUNNING" | "COMPLETED" (pending result delivery)
+    # This lets the agent report genuine in-flight tasks instead of always
+    # sending empty lists.  The agent does not persist this across restarts
+    # (no local DB), so this only covers the current session.
+    _agent_tasks: dict[str, str] = {}  # task_id → state
+    # Seed from durable store so reconnect SYNC_STATE is accurate
+    _pending_results: list[str] = [r["task_id"] for r in _restored]
+
+    # ── B2: Concurrent task queue ─────────────────────────────────────────────
+    # Tasks are accepted (ACK'd) immediately so the server sees QUEUED quickly,
+    # but executed serially in a background worker so the message loop stays
+    # free to handle PING, BEACON, and STATUS_QUERY while a task runs.
+    # Capacity: up to 8 tasks queued without back-pressure; a 9th would block
+    # the message loop, so we use a large-enough buffer for lab use.
+    _task_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+    # Shared flag set by the worker when self_remove completes so the session
+    # return value is True and _connection_lifecycle skips reconnection.
+    _decommission_flag: dict = {"value": False}
+
+    async def _task_worker() -> None:
+        """Background coroutine: pull tasks from _task_queue and execute them."""
+        while True:
+            item = await _task_queue.get()
+            if item is None:
+                # Sentinel: shut down the worker
+                break
+            p_w, task_id_w, command_w = item
+            _lab_dir_w = getattr(args, "lab_dir", "data/agent_files")
+            _params_w  = p_w.get("parameters", {})
+            activity["state"]   = "BUSY"
+            activity["task_id"] = task_id_w
+            try:
+                output_w = await asyncio.to_thread(
+                    execute_allowed, command_w, _params_w, lab_dir=_lab_dir_w
+                )
+                status_w = "COMPLETED"
+            except Exception as exc_w:
+                output_w, status_w = str(exc_w), "FAILED"
+            finally:
+                activity["state"]   = "IDLE"
+                activity["task_id"] = None
+
+            LOG.info(
+                "task completed task_id=%s status=%s output_len=%d",
+                task_id_w, status_w, len(str(output_w)),
+            )
+            _agent_tasks.pop(task_id_w, None)
+            _result_id_w = str(uuid.uuid4())
+            _pending_results.append(task_id_w)
+            # Persist before sending so a crash after send is recoverable
+            await local_state.add_pending_result(
+                task_id_w, _result_id_w, command_w, str(output_w), status_w
+            )
+            try:
+                await write_message(writer, make_message(
+                    "RESULT", agent_id=agent_id, session_id=session_id,
+                    payload={
+                        "task_id":   task_id_w,
+                        "result_id": _result_id_w,
+                        "status":    status_w,
+                        "output":    output_w,
+                    },
+                ))
+            except Exception as exc_send:
+                LOG.warning("failed to send RESULT task_id=%s: %s", task_id_w, exc_send)
+            if command_w == "self_remove" and status_w == "COMPLETED":
+                LOG.info("self_remove requested: stopping agent after final result")
+                _decommission_flag["value"] = True
+                writer.close()
+            _task_queue.task_done()
+
+    worker_task = asyncio.create_task(_task_worker())
+
     try:
         while True:
             try:
@@ -657,11 +824,17 @@ async def _run_session(args, reader, writer, agent_id: str) -> bool:
                 LOG.info("registered agent=%s session=%s", agent_id, session_id)
                 # Immediately send SYNC_STATE so the server can reconcile any
                 # tasks that were in-flight when we last disconnected.
-                # This MVP does not persist task state locally, so both lists
+                # The agent tracks in-flight tasks in _agent_tasks and unACK'd results
                 # are always empty; the server handles reconciliation on its side.
+                # Report actual in-flight tasks.  On first connection these are
+                # always empty (no prior session state).  On reconnect they
+                # reflect tasks that were received and started before the drop.
                 await write_message(writer, make_message(
                     "SYNC_STATE", agent_id=agent_id, session_id=session_id,
-                    payload={"pending_task_ids": [], "pending_result_ids": []},
+                    payload={
+                        "pending_task_ids":  list(_agent_tasks.keys()),
+                        "pending_result_ids": list(_pending_results),
+                    },
                 ))
 
             # ── SYNC_STATE_RESPONSE ───────────────────────────────────────────
@@ -673,12 +846,13 @@ async def _run_session(args, reader, writer, agent_id: str) -> bool:
             # ── SYNC_COMPLETE ─────────────────────────────────────────────────
             elif kind == "SYNC_COMPLETE":
                 # The server has finished reconciling state and the session is
-                # ready to receive tasks.  Note: the server MVP does not perform
+                # ready to receive tasks.  Note: the server does not perform
                 # any actual reconciliation (it just cancels stuck tasks on its
                 # side); the agent cannot rely on old tasks being re-delivered.
-                LOG.info("session ready (server reconciles stale tasks)")
-                # Send the first BEACON to signal that the agent is idle and
-                # ready to accept tasks.
+                LOG.info("session ready — SYNC_COMPLETE received, server cancelled any stuck tasks")
+                activity["state"] = "ONLINE"   # transitional: SYNC_COMPLETE received
+                # Send the first BEACON, then transition to IDLE
+                activity["state"] = "IDLE"
                 await write_message(writer, make_message(
                     "BEACON", agent_id=agent_id, session_id=session_id,
                     payload={"activity_state": "IDLE"},
@@ -692,52 +866,110 @@ async def _run_session(args, reader, writer, agent_id: str) -> bool:
                 task_id = p.get("task_id")
                 command = p.get("command", "")
                 LOG.info("task received task_id=%s command=%s", task_id, command)
+                _agent_tasks[task_id] = "RUNNING"
 
-                # Step 1: acknowledge receipt so the server transitions the
-                # task from WAITING_ACK to QUEUED.
+                # Step 1: acknowledge receipt immediately so the server
+                # transitions from WAITING_ACK → QUEUED without delay.
                 await write_message(writer, make_message(
                     "TASK_ACK", agent_id=agent_id, session_id=session_id,
                     payload={"task_id": task_id},
                 ))
 
-                # Step 2: report that execution is starting so the server
-                # transitions from QUEUED to RUNNING.
+                # Step 2: report RUNNING now.  The worker will execute the task
+                # asynchronously; we inform the server eagerly so it transitions
+                # QUEUED → RUNNING and the timeout watchdog starts.
                 await write_message(writer, make_message(
                     "TASK_STATUS", agent_id=agent_id, session_id=session_id,
                     payload={"task_id": task_id, "status": "RUNNING"},
                 ))
 
-                # Step 3: execute the command.  Only allowlisted commands
-                # succeed; anything else raises ValueError and is caught below.
+                # Step 3: enqueue for the background worker.
+                # The message loop continues immediately and can handle PING,
+                # BEACON_ACK, STATUS_QUERY, or a second TASK while this runs.
                 try:
-                    output = execute_allowed(command, p.get("parameters", {}), lab_dir=getattr(args, "lab_dir", "data/agent_files"))
-                    status = "COMPLETED"
-                except Exception as exc:
-                    # Execution failed — capture the error message as the output
-                    # so the operator can see what went wrong via 'result <id>'.
-                    output, status = str(exc), "FAILED"
+                    _task_queue.put_nowait((p, task_id, command))
+                except asyncio.QueueFull:
+                    # Queue full — reject this task rather than blocking the loop.
+                    activity["state"] = "DEGRADED"
+                    LOG.warning(
+                        "task queue full, rejecting task_id=%s command=%s",
+                        task_id, command,
+                    )
+                    _agent_tasks.pop(task_id, None)
+                    await write_message(writer, make_message(
+                        "RESULT", agent_id=agent_id, session_id=session_id,
+                        payload={
+                            "task_id":   task_id,
+                            "result_id": str(uuid.uuid4()),
+                            "status":    "FAILED",
+                            "output":    "Agent task queue full — retry later",
+                        },
+                    ))
+                    # Reset to IDLE so the next task can be accepted
+                    if activity["state"] == "DEGRADED":
+                        activity["state"] = "IDLE"
 
-                LOG.info(
-                    "task completed task_id=%s status=%s output_len=%d",
-                    task_id, status, len(str(output)),
-                )
+            # ── RESULT_ACK ────────────────────────────────────────────────────
+            elif kind == "RESULT_ACK":
+                # The server confirmed it persisted (accepted=True) or already
+                # has (accepted=False, duplicate) the result for this task.
+                # Either way, we can remove the task from the pending-result list
+                # so SYNC_STATE no longer reports it as pending delivery.
+                acked_task = msg["payload"].get("task_id")
+                if acked_task in _pending_results:
+                    _pending_results.remove(acked_task)
+                    # Remove from durable store — result confirmed by server
+                    await local_state.remove_pending_result(acked_task)
+                    if msg["payload"].get("accepted", True):
+                        LOG.debug(
+                            "RESULT_ACK received task_id=%s — result confirmed persisted",
+                            acked_task,
+                        )
+                    else:
+                        LOG.warning(
+                            "RESULT rejected by server task_id=%s reason=%s",
+                            acked_task,
+                            msg["payload"].get("reason", "unknown"),
+                        )
 
-                # Step 4: deliver the result.  result_id is a fresh UUID so the
-                # server can detect and reject any duplicate RESULT retransmissions.
+            # ── TASK_STATUS_QUERY ─────────────────────────────────────────────
+            elif kind == "TASK_STATUS_QUERY":
+                # Server asks the agent for the current status of a specific
+                # task, typically to resolve uncertain outcomes after a
+                # reconnect or a server restart.
+                # The agent replies with what it currently knows:
+                #   - "RUNNING"   if the task is actively executing right now
+                #   - "COMPLETED" if we finished but RESULT_ACK not yet received
+                #   - "UNKNOWN"   if we have no record of this task
+                p_tsq    = msg["payload"]
+                queried_task = p_tsq.get("task_id")
+                query_id     = p_tsq.get("query_id")   # correlation ID
+                if queried_task in _agent_tasks:
+                    known_status = _agent_tasks[queried_task]
+                elif queried_task in _pending_results:
+                    known_status = "COMPLETED"
+                else:
+                    known_status = "UNKNOWN"
                 await write_message(writer, make_message(
-                    "RESULT", agent_id=agent_id, session_id=session_id,
+                    "TASK_STATUS_RESPONSE", agent_id=agent_id, session_id=session_id,
                     payload={
-                        "task_id":   task_id,
-                        "result_id": str(uuid.uuid4()),
-                        "status":    status,
-                        "output":    output,
+                        "task_id":         queried_task,
+                        "agent_status":    known_status,
+                        "query_id":        query_id,
+                        "running_tasks":   list(_agent_tasks.keys()),
+                        "pending_results": list(_pending_results),
                     },
                 ))
-                if command == "self_remove" and status == "COMPLETED":
-                    # This is a visible, bounded decommission operation, not
-                    # deletion of program files or an OS persistence mechanism.
-                    LOG.info("self_remove requested: stopping agent after final result")
-                    return True
+                LOG.debug(
+                    "TASK_STATUS_QUERY task_id=%s → agent_status=%s",
+                    queried_task, known_status,
+                )
+
+            # ── BEACON_ACK ────────────────────────────────────────────────────
+            elif kind == "BEACON_ACK":
+                # Server acknowledges the heartbeat — no action needed; the
+                # server's touch_agent() has already refreshed last_seen.
+                pass
 
             # ── PING ──────────────────────────────────────────────────────────
             elif kind == "PING":
@@ -762,6 +994,14 @@ async def _run_session(args, reader, writer, agent_id: str) -> bool:
         if heartbeat_task is not None:
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+        # Stop the background task worker: send sentinel None to the queue
+        # so the worker exits cleanly rather than being cancelled mid-task.
+        try:
+            _task_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+        worker_task.cancel()
+        await asyncio.gather(worker_task, return_exceptions=True)
         # Always close the writer, even if the loop exits due to an exception.
         # wait_closed() ensures the TLS close_notify is sent before the TCP
         # connection is torn down.
@@ -770,8 +1010,11 @@ async def _run_session(args, reader, writer, agent_id: str) -> bool:
             await writer.wait_closed()
         except (OSError, ConnectionError, ssl.SSLError):
             pass
+        # Close the local state store; leave data in place so next session can
+        # restore pending results.  Only clear on self_remove or clean shutdown.
+        await local_state.close()
 
-
+    return _decommission_flag["value"]
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
