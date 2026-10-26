@@ -1,0 +1,40 @@
+# Agent Inventory Playbook
+# Verifies agent health and collects a full system inventory.
+# All steps are read-only — safe for any lab agent.
+name: agent_inventory
+description: "Verify agent health, collect identification, and gather a deep system inventory."
+steps:
+  - id: ping_check
+    command: echo
+    parameters:
+      text: "health-check"
+    timeout: 15
+    on_failure: stop
+
+  - id: get_id
+    command: get_info
+    depends_on: [ping_check]
+    timeout: 15
+    on_failure: stop
+
+  - id: sysinfo
+    command: sysinfo
+    depends_on: [get_id]
+    timeout: 60
+    on_failure: continue
+
+  - id: whoami
+    command: shell
+    parameters:
+      command: whoami
+    depends_on: [get_id]
+    timeout: 10
+    on_failure: continue
+
+  - id: hostname
+    command: shell
+    parameters:
+      command: uname
+    depends_on: [get_id]
+    timeout: 10
+    on_failure: continue
