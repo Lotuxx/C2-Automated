@@ -1,0 +1,36 @@
+# File Integrity Demonstration Playbook
+# Transfers a test file to the agent and verifies receipt.
+# Requires sample.txt in the server's upload directory (data/server_files/).
+name: file_integrity
+description: "Transfer sample.txt to the agent, retrieve it, and verify integrity."
+steps:
+  - id: pre_check
+    command: echo
+    parameters:
+      text: "file-integrity-start"
+    timeout: 10
+    on_failure: stop
+
+  - id: upload
+    command: upload
+    parameters:
+      name: "sample.txt"
+    depends_on: [pre_check]
+    timeout: 30
+    on_failure: stop
+
+  - id: download
+    command: download
+    parameters:
+      name: "sample.txt"
+    depends_on: [upload]
+    timeout: 30
+    on_failure: stop
+
+  - id: verify
+    command: echo
+    parameters:
+      text: "file-integrity-ok"
+    depends_on: [download]
+    timeout: 10
+    on_failure: stop
