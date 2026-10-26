@@ -1,4 +1,4 @@
-# Independent audit handoff — v5 (26 octobre 2026)
+# Independent audit handoff
 
 The project implements a fully async TLS C2 server and agent in Python.
 All features listed below are verified by automated tests (`295 passed, 7 skipped`
