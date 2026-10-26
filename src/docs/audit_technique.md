@@ -1,7 +1,7 @@
-# Audit technique — PA-C2 v10
+# Audit technique — PA-C2
 
-**Date :** 26 octobre 2026  
-**Version auditée :** v10 (corrections post-audit externe)  
+**Date :** 25 octobre 2026  
+**Version auditée :** current (corrections post-audit externe)  
 **Auditeur :** analyse statique + dynamique automatisée  
 **Périmètre :** tous les fichiers de production (hors tests, hors .venv)
 
