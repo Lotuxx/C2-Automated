@@ -1,0 +1,14 @@
+# PA-C2 — Lab C2 server requirements
+# No external dependencies are needed for the core server, agent, protocol,
+# or file-transfer logic — all of these use Python 3.10+ stdlib only.
+#
+# The only optional runtime dependency is Rich, used by the interactive CLI
+# (server/main.py) for coloured tables, panels and formatted output.
+# Without it the server will not start (Rich is imported inside cli()).
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# Python version: 3.10 or later (3.12 recommended; tested on 3.12.3)
+
+rich>=13.0.0
