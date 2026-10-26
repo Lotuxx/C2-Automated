@@ -1,4 +1,4 @@
-# Contre-mesures — PA-C2 v10
+# Contre-mesures — PA-C2
 
 > Ce document décrit les mécanismes de détection et de défense applicables à un C2 ayant les capacités de PA-C2. Il est destiné à former à la défense, pas à l'attaque.
 
